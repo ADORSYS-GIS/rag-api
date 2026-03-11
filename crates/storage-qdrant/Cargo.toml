@@ -1,0 +1,9 @@
+[package]
+name = "rag-storage-qdrant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+rag-core = { path = "../core" }

@@ -1,0 +1,11 @@
+[package]
+name = "rag-app-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+rag-core = { path = "../core" }
+serde.workspace = true
