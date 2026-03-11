@@ -55,7 +55,7 @@ impl SourceType {
         }
     }
 
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "upload" => Some(Self::Upload),
             "local_file" => Some(Self::LocalFile),
@@ -236,7 +236,8 @@ pub trait ChunkRepository: Send + Sync {
 
 #[async_trait]
 pub trait EmbeddingClient: Send + Sync {
-    async fn embed_texts(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>, CoreError>;
+    async fn embed_texts(&self, model: &str, inputs: &[String])
+    -> Result<Vec<Vec<f32>>, CoreError>;
 
     async fn embed_query(&self, model: &str, input: &str) -> Result<Vec<f32>, CoreError>;
 }
@@ -260,8 +261,12 @@ pub trait AssetLockManager: Send + Sync {
 pub trait QueryCache: Send + Sync {
     async fn get_query_embedding(&self, key: &str) -> Result<Option<Vec<f32>>, CoreError>;
 
-    async fn put_query_embedding(&self, key: &str, vector: Vec<f32>, ttl_secs: u64)
-        -> Result<(), CoreError>;
+    async fn put_query_embedding(
+        &self,
+        key: &str,
+        vector: Vec<f32>,
+        ttl_secs: u64,
+    ) -> Result<(), CoreError>;
 }
 
 #[async_trait]

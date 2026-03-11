@@ -1,11 +1,6 @@
 use std::sync::Arc;
 
-use axum::{
-    extract::State,
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
-};
+use axum::{Json, Router, extract::State, response::IntoResponse, routing::get};
 use rag_core::{ExtractService, IngestService, QueryService};
 use serde::Serialize;
 

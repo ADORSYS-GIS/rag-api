@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::{Json as ExtractJson, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use rag_core::{
-    ActorId, AssetId, CoreError, ExtractService, IngestService, Namespace, QueryRequest,
-    QueryService, RequestContext, Scope, TenantId,
+    ActorId, AssetId, BatchQueryRequest, CoreError, ExtractService, IngestService, Namespace,
+    QueryRequest, QueryService, RequestContext, Scope, TenantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +33,7 @@ pub fn router(state: HttpApiState) -> Router {
         .route("/v1/assets:ingest", post(not_implemented))
         .route("/v1/assets:extract", post(not_implemented))
         .route("/v1/query", post(query))
-        .route("/v1/query:batch", post(not_implemented))
+        .route("/v1/query:batch", post(query_batch))
         .route("/v1/assets", get(not_implemented).delete(not_implemented))
         .route("/v1/assets/{asset_id}/chunks", get(not_implemented))
         .route("/v1/assets/{asset_id}/context", get(not_implemented))
@@ -68,6 +68,15 @@ struct QueryBody {
     query: String,
     k: Option<usize>,
     asset_id: Option<String>,
+    tenant_id: Option<String>,
+    namespace: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryBatchBody {
+    query: String,
+    k: Option<usize>,
+    asset_ids: Vec<String>,
     tenant_id: Option<String>,
     namespace: Option<String>,
 }
@@ -120,6 +129,62 @@ async fn query(
     }
 }
 
+async fn query_batch(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+    ExtractJson(body): ExtractJson<QueryBatchBody>,
+) -> impl IntoResponse {
+    if body.query.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"query cannot be empty"})),
+        )
+            .into_response();
+    }
+
+    if body.asset_ids.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"asset_ids cannot be empty"})),
+        )
+            .into_response();
+    }
+
+    let scope = Scope {
+        tenant_id: TenantId(
+            body.tenant_id
+                .or_else(|| header_string(&headers, "x-tenant-id"))
+                .unwrap_or_else(|| "public".to_string()),
+        ),
+        namespace: Namespace(
+            body.namespace
+                .or_else(|| header_string(&headers, "x-namespace"))
+                .unwrap_or_else(|| "default".to_string()),
+        ),
+    };
+
+    let ctx = RequestContext {
+        tenant_id: scope.tenant_id.clone(),
+        actor_id: header_string(&headers, "x-actor-id").map(ActorId),
+        roles: vec![],
+        allowed_namespaces: vec![scope.namespace.clone()],
+        request_id: header_string(&headers, "x-request-id")
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+    };
+
+    let request = BatchQueryRequest {
+        scope,
+        query: body.query,
+        asset_ids: body.asset_ids.into_iter().map(AssetId).collect(),
+        k: body.k.unwrap_or(4),
+    };
+
+    match state.query_service.query_batch(ctx, request).await {
+        Ok(response) => Json(response).into_response(),
+        Err(err) => core_error_to_response(err),
+    }
+}
+
 fn header_string(headers: &HeaderMap, key: &str) -> Option<String> {
     headers
         .get(key)
@@ -150,23 +215,28 @@ fn core_error_to_response(err: CoreError) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use axum::{body::Body, http::{Request, StatusCode}};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
     use http_body_util::BodyExt;
     use rag_core::{
         BatchQueryRequest, BatchQueryResponse, ChunkRecord, CoreError, ExtractRequest,
-        ExtractResponse, ExtractService, IngestRequest, IngestResponse, IngestService, QueryRequest,
-        QueryResponse, QueryService, RequestContext, ScoredChunk,
+        ExtractResponse, ExtractService, IngestRequest, IngestResponse, IngestService,
+        QueryRequest, QueryResponse, QueryService, RequestContext, ScoredChunk,
     };
     use tower::ServiceExt;
 
-    use super::{router, HttpApiState};
+    use super::{HttpApiState, router};
 
     struct DummyIngest;
     struct DummyExtract;
-    struct DummyQuery;
+    struct DummyQuery {
+        seen_batch: Arc<Mutex<Option<BatchQueryRequest>>>,
+    }
 
     #[async_trait]
     impl IngestService for DummyIngest {
@@ -231,18 +301,44 @@ mod tests {
         async fn query_batch(
             &self,
             _ctx: RequestContext,
-            _request: BatchQueryRequest,
+            request: BatchQueryRequest,
         ) -> Result<BatchQueryResponse, CoreError> {
-            Ok(BatchQueryResponse { matches: vec![] })
+            *self.seen_batch.lock().unwrap() = Some(request.clone());
+
+            let chunk = ChunkRecord {
+                tenant_id: request.scope.tenant_id,
+                namespace: request.scope.namespace,
+                asset_id: request.asset_ids[0].clone(),
+                actor_id: None,
+                source_type: rag_core::SourceType::Text,
+                source_uri: None,
+                digest: "d-batch".to_string(),
+                chunk_index: 0,
+                page: None,
+                path: None,
+                language: None,
+                mime_type: None,
+                title: None,
+                text: "hello-batch".to_string(),
+                embedding: vec![],
+                tags: vec![],
+                created_at: chrono::Utc::now(),
+            };
+            Ok(BatchQueryResponse {
+                matches: vec![ScoredChunk { chunk, score: 0.8 }],
+            })
         }
     }
 
     #[tokio::test]
     async fn post_v1_query_returns_matches() {
+        let seen_batch = Arc::new(Mutex::new(None));
         let state = HttpApiState {
             ingest_service: Arc::new(DummyIngest),
             extract_service: Arc::new(DummyExtract),
-            query_service: Arc::new(DummyQuery),
+            query_service: Arc::new(DummyQuery {
+                seen_batch: seen_batch.clone(),
+            }),
         };
         let app = router(state);
 
@@ -262,5 +358,39 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(value["matches"].is_array());
         assert_eq!(value["matches"][0]["chunk"]["asset_id"], "file-1");
+    }
+
+    #[tokio::test]
+    async fn post_v1_query_batch_returns_matches() {
+        let seen_batch = Arc::new(Mutex::new(None));
+        let state = HttpApiState {
+            ingest_service: Arc::new(DummyIngest),
+            extract_service: Arc::new(DummyExtract),
+            query_service: Arc::new(DummyQuery {
+                seen_batch: seen_batch.clone(),
+            }),
+        };
+        let app = router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/query:batch")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"query":"hello","asset_ids":["file-1","file-2"],"k":3}"#.to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(value["matches"].is_array());
+        assert_eq!(value["matches"][0]["chunk"]["asset_id"], "file-1");
+
+        let seen = seen_batch.lock().unwrap().clone().unwrap();
+        assert_eq!(seen.asset_ids.len(), 2);
+        assert_eq!(seen.k, 3);
     }
 }

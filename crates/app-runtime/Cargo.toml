@@ -6,6 +6,10 @@ license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-chrono.workspace = true
 rag-core = { path = "../core" }
-serde.workspace = true
+rag-openai-compat = { path = "../openai-compat" }
+rag-storage-qdrant = { path = "../storage-qdrant" }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

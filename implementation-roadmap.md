@@ -11,6 +11,24 @@ The target deliverables are:
 - `rag-mcp.rs`
 - shared reusable Rust core
 
+## Current Status (March 11, 2026)
+
+Completed:
+
+- workspace scaffold and crate boundaries
+- baseline runtime wiring
+- canonical `POST /v1/query` route scaffold and tests
+- legacy `POST /query` translator and tests
+- initial Qdrant repository implementation with schema bootstrap and core CRUD/search methods
+
+Remaining high-priority:
+
+- replace sample query service with real Qdrant + OpenAI embedding flow
+- implement canonical ingest and extract endpoints
+- implement remaining legacy endpoints for parity
+- add Redis locking and cache behavior
+- implement MCP tools/resources using shared services
+
 ## Delivery Strategy
 
 Build from the inside out:
@@ -25,6 +43,8 @@ Build from the inside out:
 This order prevents the proxy from shaping the core architecture.
 
 ## Milestone 0: Project Skeleton
+
+Status: `completed`
 
 ### Scope
 
@@ -53,6 +73,8 @@ Create the initial Rust workspace and repo conventions.
 - no HTTP routes beyond placeholder health endpoints
 
 ## Milestone 1: Canonical Domain and Contracts
+
+Status: `mostly completed`
 
 ### Scope
 
@@ -86,6 +108,8 @@ Define the reusable model that both REST and MCP will share.
 At this point, preserve `asset_id` as the canonical equivalent of legacy `file_id`, but do not expose `file_id` in the shared core.
 
 ## Milestone 2: Qdrant Storage Layer
+
+Status: `in progress`
 
 ### Scope
 
@@ -127,6 +151,8 @@ Implement Qdrant as the only persistent backend.
 
 ## Milestone 3: Redis Locking and Cache Layer
 
+Status: `not started`
+
 ### Scope
 
 Implement transient coordination only.
@@ -153,6 +179,8 @@ Implement transient coordination only.
 
 ## Milestone 4: OpenAI-Compatible Clients
 
+Status: `not started`
+
 ### Scope
 
 Implement upstream provider integrations.
@@ -178,6 +206,8 @@ Implement upstream provider integrations.
 If image support is not ready, ship with clear capability flags rather than a partial silent implementation.
 
 ## Milestone 5: Extraction and Chunking Pipeline
+
+Status: `not started`
 
 ### Scope
 
@@ -212,6 +242,8 @@ Implement in this order:
 
 ## Milestone 6: `rag-api.rs` Canonical REST Server
 
+Status: `in progress`
+
 ### Scope
 
 Build the reusable REST surface.
@@ -244,6 +276,8 @@ Build the reusable REST surface.
 
 ## Milestone 7: `rag-mcp.rs` Canonical MCP Server
 
+Status: `not started`
+
 ### Scope
 
 Expose the same capabilities through Streamable HTTP MCP.
@@ -272,6 +306,8 @@ Expose the same capabilities through Streamable HTTP MCP.
 - at least one IDE or agent client can connect end-to-end in a smoke test
 
 ## Milestone 8: `legacy-proxy`
+
+Status: `in progress`
 
 ### Scope
 
@@ -309,6 +345,8 @@ Add the compatibility layer after the canonical surfaces are stable.
 
 ## Milestone 9: Cross-Cutting Hardening
 
+Status: `not started`
+
 ### Scope
 
 Raise the quality bar before production cutover.
@@ -335,6 +373,8 @@ Raise the quality bar before production cutover.
 
 ## Milestone 10: Cutover
 
+Status: `not started`
+
 ### Scope
 
 Replace the Python service in production safely.
@@ -352,6 +392,66 @@ Replace the Python service in production safely.
 - LibreChat works against the proxy without client changes
 - canonical REST and MCP are both exercised by at least one non-LibreChat consumer
 - rollback to the Python stack is documented and tested
+
+## Next Iterations (Execution Order)
+
+### Iteration 2
+
+Focus:
+
+- real query path: `EmbeddingClient` -> `ChunkRepository::search`
+- remove sample runtime query behavior
+
+Exit criteria:
+
+- `/v1/query` and legacy `/query` call the same real query service
+- query integration test passes against local Qdrant
+
+### Iteration 3
+
+Focus:
+
+- canonical ingest and extract implementation
+- upload and text sources first
+
+Exit criteria:
+
+- `/v1/assets:ingest` and `/v1/assets:extract` are functional
+- upserted chunks are retrievable and searchable
+
+### Iteration 4
+
+Focus:
+
+- legacy parity expansion for embed/text/context/doc routes
+
+Exit criteria:
+
+- all high-priority legacy routes implemented with expected response shape
+- compatibility test suite green
+
+### Iteration 5
+
+Focus:
+
+- Redis locking and idempotency
+- conflict handling for ingest/delete races
+
+Exit criteria:
+
+- race-condition tests pass
+- lock/caching behavior configurable and observable
+
+### Iteration 6
+
+Focus:
+
+- MCP tools/resources implementation and smoke testing
+
+Exit criteria:
+
+- MVP MCP tools available and using shared core services
+- one client integration smoke test passes
 
 ## Acceptance Matrix By Component
 
@@ -388,21 +488,6 @@ Must have:
 - protocol and shape compatibility only
 - zero direct domain ownership
 - zero storage ownership
-
-## Recommended Execution Order
-
-Implement in this exact order:
-
-1. workspace and CI skeleton
-2. domain contracts
-3. Qdrant storage
-4. Redis lock and cache layer
-5. embeddings client
-6. extraction and chunking pipeline
-7. canonical REST server
-8. canonical MCP server
-9. legacy proxy
-10. hardening and cutover
 
 ## Explicit Deferred Items
 

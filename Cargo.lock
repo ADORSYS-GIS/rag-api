@@ -1281,9 +1281,11 @@ name = "rag-app-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "chrono",
  "rag-core",
- "serde",
+ "rag-openai-compat",
+ "rag-storage-qdrant",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1372,6 +1374,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "rag-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder,
     Distance, FieldType, PointStruct, ScoredPoint, ScrollPointsBuilder, SearchPointsBuilder,
-    VectorParamsBuilder,
+    VectorParamsBuilder, vectors_config,
 };
 use qdrant_client::{Payload, Qdrant};
 use rag_core::{
@@ -79,16 +79,15 @@ impl QdrantChunkRepository {
             .map_err(|e| CoreError::Storage(format!("collection_exists failed: {e}")))?;
 
         if exists {
+            self.validate_existing_collection_vector_size().await?;
             return Ok(());
         }
 
         self.client
             .create_collection(
-                CreateCollectionBuilder::new(&self.config.collection_name)
-                    .vectors_config(VectorParamsBuilder::new(
-                        self.config.vector_size,
-                        Distance::Cosine,
-                    )),
+                CreateCollectionBuilder::new(&self.config.collection_name).vectors_config(
+                    VectorParamsBuilder::new(self.config.vector_size, Distance::Cosine),
+                ),
             )
             .await
             .map_err(|e| CoreError::Storage(format!("create_collection failed: {e}")))?;
@@ -96,8 +95,69 @@ impl QdrantChunkRepository {
         Ok(())
     }
 
+    async fn validate_existing_collection_vector_size(&self) -> Result<(), CoreError> {
+        let info = self
+            .client
+            .collection_info(&self.config.collection_name)
+            .await
+            .map_err(|e| CoreError::Storage(format!("collection_info failed: {e}")))?;
+
+        let Some(result) = info.result else {
+            return Err(CoreError::Storage(
+                "collection_info returned no result".to_string(),
+            ));
+        };
+
+        let Some(config) = result.config else {
+            return Err(CoreError::Storage(
+                "collection has no config payload".to_string(),
+            ));
+        };
+
+        let Some(params) = config.params else {
+            return Err(CoreError::Storage(
+                "collection has no params payload".to_string(),
+            ));
+        };
+
+        let Some(vectors_config) = params.vectors_config else {
+            return Err(CoreError::Storage(
+                "collection has no vectors_config".to_string(),
+            ));
+        };
+
+        let actual_size = match vectors_config.config {
+            Some(vectors_config::Config::Params(vector)) => Some(vector.size),
+            Some(vectors_config::Config::ParamsMap(vectors)) => {
+                vectors.map.values().next().map(|vector| vector.size)
+            }
+            None => None,
+        };
+
+        let Some(actual_size) = actual_size else {
+            return Err(CoreError::Storage(
+                "unable to determine collection vector size".to_string(),
+            ));
+        };
+
+        if actual_size != self.config.vector_size {
+            return Err(CoreError::Validation(format!(
+                "qdrant collection '{}' vector size mismatch: expected {}, found {}",
+                self.config.collection_name, self.config.vector_size, actual_size
+            )));
+        }
+
+        Ok(())
+    }
+
     async fn ensure_indexes(&self) -> Result<(), CoreError> {
-        for field in ["tenant_id", "namespace", "asset_id", "actor_id", "source_type"] {
+        for field in [
+            "tenant_id",
+            "namespace",
+            "asset_id",
+            "actor_id",
+            "source_type",
+        ] {
             let result = self
                 .client
                 .create_field_index(CreateFieldIndexCollectionBuilder::new(
@@ -122,11 +182,7 @@ impl QdrantChunkRepository {
     fn point_id(chunk: &ChunkRecord) -> String {
         let seed = format!(
             "{}:{}:{}:{}:{}",
-            chunk.tenant_id.0,
-            chunk.namespace.0,
-            chunk.asset_id.0,
-            chunk.chunk_index,
-            chunk.digest
+            chunk.tenant_id.0, chunk.namespace.0, chunk.asset_id.0, chunk.chunk_index, chunk.digest
         );
         Uuid::new_v5(&Uuid::NAMESPACE_OID, seed.as_bytes()).to_string()
     }
@@ -270,8 +326,11 @@ impl ChunkRepository for QdrantChunkRepository {
 
         self.client
             .upsert_points(
-                qdrant_client::qdrant::UpsertPointsBuilder::new(&self.config.collection_name, points)
-                    .wait(true),
+                qdrant_client::qdrant::UpsertPointsBuilder::new(
+                    &self.config.collection_name,
+                    points,
+                )
+                .wait(true),
             )
             .await
             .map_err(|e| CoreError::Storage(format!("qdrant upsert failed: {e}")))?;
@@ -423,7 +482,7 @@ impl StoredPayload {
             namespace: Namespace(self.namespace),
             asset_id: AssetId(self.asset_id),
             actor_id: self.actor_id.map(ActorId),
-            source_type: SourceType::from_str(&self.source_type).unwrap_or(SourceType::Text),
+            source_type: SourceType::parse(&self.source_type).unwrap_or(SourceType::Text),
             source_uri: self.source_uri,
             digest: self.digest,
             chunk_index: self.chunk_index,

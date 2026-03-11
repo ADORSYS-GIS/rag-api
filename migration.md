@@ -91,6 +91,132 @@ Purpose:
 - use Streamable HTTP MCP transport
 - provide tools and resources rather than legacy file-upload route semantics
 
+## Iteration Status (Updated March 11, 2026)
+
+### Completed now
+
+- Rust workspace scaffold for all crates and binaries
+- canonical `POST /v1/query` route scaffold with validation and error mapping
+- legacy `POST /query` translation route with legacy tuple response shape
+- initial runtime service wiring for query flows
+- Qdrant repository implementation for:
+  - collection and payload index bootstrap
+  - upsert
+  - filtered search
+  - asset chunk fetch and list
+  - asset delete
+- workspace `cargo check` and `cargo test` passing
+
+### Not completed yet
+
+- runtime wiring from API handlers to real Qdrant + OpenAI embedding client
+- canonical ingest and extract endpoints
+- legacy embed and text endpoints
+- Redis lock and cache integration
+- MCP tool/resource implementation
+- parity and golden tests against the Python service
+
+## Next Iterations
+
+### Iteration 2: Real Query Pipeline Wiring
+
+Scope:
+
+- wire `rag-api.rs` query flow to real `ChunkRepository` + `EmbeddingClient`
+- remove sample query behavior from runtime
+- add configurable model and dimension validation
+
+Deliverables:
+
+- production query service implementation
+- dependency graph wiring in runtime container
+- startup checks for Qdrant collection compatibility
+
+Acceptance criteria:
+
+- `POST /v1/query` executes real embed + vector search path
+- query filters enforce `tenant_id` and `namespace`
+- query errors map cleanly to API statuses
+- integration test proves end-to-end query against local Qdrant
+
+### Iteration 3: Canonical Ingestion and Extract
+
+Scope:
+
+- implement `POST /v1/assets:ingest`
+- implement `POST /v1/assets:extract`
+- support text and upload sources first
+
+Deliverables:
+
+- ingestion pipeline (extract -> normalize -> chunk -> embed -> upsert)
+- extract-only path without vector writes
+- deterministic chunk ids and digest behavior
+
+Acceptance criteria:
+
+- ingest writes searchable chunks in Qdrant
+- extract returns text without storage side effects
+- basic upload and plain-text requests work end-to-end
+
+### Iteration 4: Legacy Proxy Expansion
+
+Scope:
+
+- implement legacy endpoints beyond `/query`
+- preserve Python response shapes
+
+Deliverables:
+
+- `/embed`
+- `/embed-upload`
+- `/text`
+- `/documents/{id}/context`
+- `/ids`, `/documents`, and `DELETE /documents`
+
+Acceptance criteria:
+
+- route behavior matches legacy contract for status code and response structure
+- translation logic stays isolated inside `legacy-compat`
+
+### Iteration 5: Redis Coordination + Robustness
+
+Scope:
+
+- add lock and cache integration where needed
+- harden concurrent workflows
+
+Deliverables:
+
+- per-asset ingest/delete locks
+- optional query embedding cache
+- idempotency key support for ingest operations
+
+Acceptance criteria:
+
+- concurrent writes for the same asset are controlled
+- delete vs ingest races are prevented
+- cache usage is optional and configurable
+
+### Iteration 6: MCP Capability Rollout
+
+Scope:
+
+- implement MCP tools and resources over Streamable HTTP
+- reuse same domain services as REST
+
+Deliverables:
+
+- tools for ingest, extract, query, delete, list
+- resources for chunk/context retrieval
+- auth and origin validation at MCP boundary
+
+Acceptance criteria:
+
+- MCP calls use the same core logic as REST
+- no duplicated business logic in MCP adapter
+- smoke test with one MCP client passes
+
 ## Core Domain Model
 
 The reusable domain should not be centered only on `file_id`.
@@ -493,6 +619,99 @@ To keep v1 focused, defer these unless they become necessary:
 /bins/rag-mcp.rs
 /bins/legacy-proxy.rs
 ```
+
+## Immediate Execution Backlog (Iteration 2 Active)
+
+This section is the implementation checklist for replacing scaffold behavior with the real query path.
+
+### Current Runtime Gap
+
+- `crates/app-runtime/src/lib.rs` still wires `SampleQueryService`
+- `crates/openai-compat/src/lib.rs` still returns `CoreError::NotImplemented`
+- `crates/http-api/src/lib.rs` and `crates/legacy-compat/src/lib.rs` are wired to service traits, but only query is partially implemented
+- `crates/storage-qdrant/src/lib.rs` has repository behavior ready, but is not used in runtime wiring yet
+
+### Iteration 2 File-Level Plan
+
+1. `crates/app-runtime/src/lib.rs`
+   - replace `SampleQueryService` with a production `QueryService` implementation
+   - inject `ChunkRepository`, `EmbeddingClient`, and optional `QueryCache`
+   - keep `IngestService` and `ExtractService` placeholders until Iteration 3
+2. `crates/openai-compat/src/lib.rs`
+   - implement OpenAI-compatible `/v1/embeddings` client behavior
+   - normalize upstream failures into `CoreError::Provider`
+3. `crates/http-api/src/lib.rs`
+   - keep request validation in adapter layer
+   - map provider and storage failures to stable status and error payloads
+4. `crates/legacy-compat/src/lib.rs`
+   - ensure `POST /query` translation uses the same production query service
+   - preserve legacy tuple response shape without leaking canonical schema details
+5. `bins/rag-api.rs/src/main.rs`, `bins/legacy-proxy.rs/src/main.rs`, `bins/rag-mcp.rs/src/main.rs`
+   - wire shared runtime config and dependency graph once
+   - avoid per-binary divergence in provider/storage initialization
+
+### Iteration 2 Done Conditions
+
+- no sample query text appears in runtime query responses
+- `POST /v1/query` and legacy `POST /query` both hit the same production query service path
+- query path depends on real embedding vectors and Qdrant search
+- invalid query and upstream failures map to stable, tested status codes
+- one integration test proves end-to-end query flow against local Qdrant
+
+## Runtime Configuration Contract (Draft v1)
+
+### Already Used
+
+- `RAG_SERVER_BIND_ADDR` default `0.0.0.0:8080`
+- `RAG_MCP_BIND_ADDR` default `0.0.0.0:8081`
+- `LEGACY_PROXY_BIND_ADDR` default `0.0.0.0:8000`
+- `LEGACY_DEFAULT_TENANT` default `public`
+- `LEGACY_DEFAULT_NAMESPACE` default `librechat`
+- `RUST_LOG` service-specific default value per binary
+
+### Required For Real Query Wiring
+
+- `QDRANT_URL` default `http://localhost:6334`
+- `QDRANT_API_KEY` optional
+- `QDRANT_COLLECTION` default `chunks_te3_small`
+- `QDRANT_VECTOR_SIZE` default `1536`
+- `OPENAI_BASE_URL` required when real provider mode is enabled
+- `OPENAI_API_KEY` required when real provider mode is enabled
+- `OPENAI_EMBED_MODEL` default `text-embedding-3-small`
+- `OPENAI_TIMEOUT_MS` default `30000`
+- `OPENAI_MAX_RETRIES` default `2`
+- `QUERY_TOP_K_DEFAULT` default `4`
+- `QUERY_TOP_K_MAX` default `20`
+
+### Startup Validation Rules
+
+- fail fast if `QDRANT_VECTOR_SIZE` is not a positive integer
+- fail fast if `QUERY_TOP_K_DEFAULT` is zero or greater than `QUERY_TOP_K_MAX`
+- fail fast in production mode when OpenAI base URL or API key is missing
+- verify Qdrant collection dimension matches configured embedding dimension
+- emit startup log that includes selected embedding model and collection name
+
+## Test and Cutover Gates
+
+### Mandatory CI Gates Per Iteration
+
+- `cargo check --workspace`
+- `cargo test --workspace`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+
+### Query Path Gates (Iteration 2)
+
+- adapter tests for canonical `/v1/query` validation and error mapping
+- adapter tests for legacy `/query` response shaping and header/env scope resolution
+- integration test for real embed + Qdrant search path
+- negative integration tests for provider timeout and empty-query validation
+
+### Cutover Readiness Gates (Before Python Retirement)
+
+- golden compatibility suite for all legacy routes is green
+- canonical REST ingest/extract/query flows are green in integration tests
+- MCP smoke test proves shared service behavior (no duplicate business logic)
+- dual-run comparison has no unexplained response-shape differences for agreed traffic
 
 ## Guiding Rule
 

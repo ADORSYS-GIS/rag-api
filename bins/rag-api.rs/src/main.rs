@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rag_app_runtime::build_container;
-use rag_http_api::{router, HttpApiState};
+use rag_http_api::{HttpApiState, router};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -11,7 +11,7 @@ async fn main() -> Result<()> {
         .json()
         .init();
 
-    let container = build_container();
+    let container = build_container()?;
     let state = HttpApiState {
         ingest_service: container.ingest_service,
         extract_service: container.extract_service,
