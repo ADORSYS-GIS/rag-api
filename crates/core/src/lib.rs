@@ -41,6 +41,35 @@ pub enum SourceType {
     IdeBuffer,
 }
 
+impl SourceType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Upload => "upload",
+            Self::LocalFile => "local_file",
+            Self::Website => "website",
+            Self::Pdf => "pdf",
+            Self::Image => "image",
+            Self::Code => "code",
+            Self::Text => "text",
+            Self::IdeBuffer => "ide_buffer",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "upload" => Some(Self::Upload),
+            "local_file" => Some(Self::LocalFile),
+            "website" => Some(Self::Website),
+            "pdf" => Some(Self::Pdf),
+            "image" => Some(Self::Image),
+            "code" => Some(Self::Code),
+            "text" => Some(Self::Text),
+            "ide_buffer" => Some(Self::IdeBuffer),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestRequest {
     pub scope: Scope,
@@ -112,6 +141,8 @@ pub struct ChunkRecord {
     pub mime_type: Option<String>,
     pub title: Option<String>,
     pub text: String,
+    #[serde(default)]
+    pub embedding: Vec<f32>,
     pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
