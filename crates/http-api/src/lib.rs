@@ -8,8 +8,9 @@ use axum::{
     routing::{get, post},
 };
 use rag_core::{
-    ActorId, AssetId, BatchQueryRequest, CoreError, ExtractService, IngestService, Namespace,
-    QueryRequest, QueryService, RequestContext, Scope, TenantId,
+    ActorId, AssetId, BatchQueryRequest, CoreError, ExtractRequest, ExtractService, IngestRequest,
+    IngestService, Namespace, QueryRequest, QueryService, RequestContext, Scope, SourceType,
+    TenantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,8 +31,8 @@ pub fn router(state: HttpApiState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/v1/assets:ingest", post(not_implemented))
-        .route("/v1/assets:extract", post(not_implemented))
+        .route("/v1/assets:ingest", post(ingest))
+        .route("/v1/assets:extract", post(extract))
         .route("/v1/query", post(query))
         .route("/v1/query:batch", post(query_batch))
         .route("/v1/assets", get(not_implemented).delete(not_implemented))
@@ -79,6 +80,26 @@ struct QueryBatchBody {
     asset_ids: Vec<String>,
     tenant_id: Option<String>,
     namespace: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IngestBody {
+    tenant_id: Option<String>,
+    namespace: Option<String>,
+    asset_id: String,
+    source_type: String,
+    source_uri: Option<String>,
+    content: Option<String>,
+    mime_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtractBody {
+    tenant_id: Option<String>,
+    namespace: Option<String>,
+    source_type: String,
+    source_uri: Option<String>,
+    content: Option<String>,
 }
 
 async fn query(
@@ -185,6 +206,134 @@ async fn query_batch(
     }
 }
 
+async fn ingest(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+    ExtractJson(body): ExtractJson<IngestBody>,
+) -> impl IntoResponse {
+    let tenant_id = body
+        .tenant_id
+        .or_else(|| header_string(&headers, "x-tenant-id"))
+        .unwrap_or_else(|| "public".to_string());
+    let namespace = body
+        .namespace
+        .or_else(|| header_string(&headers, "x-namespace"))
+        .unwrap_or_else(|| "default".to_string());
+
+    let source_type = match SourceType::parse(&body.source_type) {
+        Some(value) => value,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"invalid source_type"})),
+            )
+                .into_response();
+        }
+    };
+
+    let content = match body.content.as_ref().filter(|v| !v.trim().is_empty()) {
+        Some(value) => value.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"content cannot be empty"})),
+            )
+                .into_response();
+        }
+    };
+
+    let scope = Scope {
+        tenant_id: TenantId(tenant_id.clone()),
+        namespace: Namespace(namespace.clone()),
+    };
+
+    let ctx = RequestContext {
+        tenant_id: TenantId(tenant_id.clone()),
+        actor_id: header_string(&headers, "x-actor-id").map(ActorId),
+        roles: vec![],
+        allowed_namespaces: vec![scope.namespace.clone()],
+        request_id: header_string(&headers, "x-request-id")
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+    };
+
+    let request = IngestRequest {
+        scope,
+        asset_id: AssetId(body.asset_id.clone()),
+        source_type,
+        source_uri: body.source_uri.clone(),
+        content: Some(content),
+        mime_type: body.mime_type.clone(),
+    };
+
+    match state.ingest_service.ingest(ctx, request).await {
+        Ok(response) => Json(response).into_response(),
+        Err(err) => core_error_to_response(err),
+    }
+}
+
+async fn extract(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+    ExtractJson(body): ExtractJson<ExtractBody>,
+) -> impl IntoResponse {
+    let tenant_id = body
+        .tenant_id
+        .or_else(|| header_string(&headers, "x-tenant-id"))
+        .unwrap_or_else(|| "public".to_string());
+    let namespace = body
+        .namespace
+        .or_else(|| header_string(&headers, "x-namespace"))
+        .unwrap_or_else(|| "default".to_string());
+
+    let source_type = match SourceType::parse(&body.source_type) {
+        Some(value) => value,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"invalid source_type"})),
+            )
+                .into_response();
+        }
+    };
+
+    let content = match body.content.as_ref().filter(|v| !v.trim().is_empty()) {
+        Some(value) => value.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"content cannot be empty"})),
+            )
+                .into_response();
+        }
+    };
+
+    let scope = Scope {
+        tenant_id: TenantId(tenant_id.clone()),
+        namespace: Namespace(namespace.clone()),
+    };
+
+    let ctx = RequestContext {
+        tenant_id: TenantId(tenant_id),
+        actor_id: header_string(&headers, "x-actor-id").map(ActorId),
+        roles: vec![],
+        allowed_namespaces: vec![scope.namespace.clone()],
+        request_id: header_string(&headers, "x-request-id")
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+    };
+
+    let request = ExtractRequest {
+        scope,
+        source_type,
+        source_uri: body.source_uri.clone(),
+        content: Some(content),
+    };
+
+    match state.extract_service.extract(ctx, request).await {
+        Ok(response) => Json(response).into_response(),
+        Err(err) => core_error_to_response(err),
+    }
+}
+
 fn header_string(headers: &HeaderMap, key: &str) -> Option<String> {
     headers
         .get(key)
@@ -232,8 +381,12 @@ mod tests {
 
     use super::{HttpApiState, router};
 
-    struct DummyIngest;
-    struct DummyExtract;
+    struct DummyIngest {
+        seen_request: Arc<Mutex<Option<IngestRequest>>>,
+    }
+    struct DummyExtract {
+        seen_request: Arc<Mutex<Option<ExtractRequest>>>,
+    }
     struct DummyQuery {
         seen_batch: Arc<Mutex<Option<BatchQueryRequest>>>,
     }
@@ -245,9 +398,10 @@ mod tests {
             _ctx: RequestContext,
             request: IngestRequest,
         ) -> Result<IngestResponse, CoreError> {
+            *self.seen_request.lock().unwrap() = Some(request.clone());
             Ok(IngestResponse {
                 asset_id: request.asset_id,
-                chunks_written: 0,
+                chunks_written: 1,
             })
         }
     }
@@ -257,10 +411,11 @@ mod tests {
         async fn extract(
             &self,
             _ctx: RequestContext,
-            _request: ExtractRequest,
+            request: ExtractRequest,
         ) -> Result<ExtractResponse, CoreError> {
+            *self.seen_request.lock().unwrap() = Some(request.clone());
             Ok(ExtractResponse {
-                text: "ok".to_string(),
+                text: request.content.unwrap_or_else(|| "ok".to_string()),
             })
         }
     }
@@ -334,8 +489,12 @@ mod tests {
     async fn post_v1_query_returns_matches() {
         let seen_batch = Arc::new(Mutex::new(None));
         let state = HttpApiState {
-            ingest_service: Arc::new(DummyIngest),
-            extract_service: Arc::new(DummyExtract),
+            ingest_service: Arc::new(DummyIngest {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
+            extract_service: Arc::new(DummyExtract {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
             query_service: Arc::new(DummyQuery {
                 seen_batch: seen_batch.clone(),
             }),
@@ -364,8 +523,12 @@ mod tests {
     async fn post_v1_query_batch_returns_matches() {
         let seen_batch = Arc::new(Mutex::new(None));
         let state = HttpApiState {
-            ingest_service: Arc::new(DummyIngest),
-            extract_service: Arc::new(DummyExtract),
+            ingest_service: Arc::new(DummyIngest {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
+            extract_service: Arc::new(DummyExtract {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
             query_service: Arc::new(DummyQuery {
                 seen_batch: seen_batch.clone(),
             }),
@@ -392,5 +555,84 @@ mod tests {
         let seen = seen_batch.lock().unwrap().clone().unwrap();
         assert_eq!(seen.asset_ids.len(), 2);
         assert_eq!(seen.k, 3);
+    }
+
+    #[tokio::test]
+    async fn post_v1_assets_ingest_returns_ok() {
+        let seen_ingest = Arc::new(Mutex::new(None));
+        let state = HttpApiState {
+            ingest_service: Arc::new(DummyIngest {
+                seen_request: seen_ingest.clone(),
+            }),
+            extract_service: Arc::new(DummyExtract {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
+            query_service: Arc::new(DummyQuery {
+                seen_batch: Arc::new(Mutex::new(None)),
+            }),
+        };
+        let app = router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/assets:ingest")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "tenant_id":"public",
+                    "namespace":"default",
+                    "asset_id":"asset-1",
+                    "source_type":"text",
+                    "content":"payload"
+                }"#
+                .to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let captured = seen_ingest.lock().unwrap().clone().unwrap();
+        assert_eq!(captured.asset_id.0, "asset-1");
+        assert_eq!(captured.scope.namespace.0, "default");
+    }
+
+    #[tokio::test]
+    async fn post_v1_assets_extract_returns_text() {
+        let seen_extract = Arc::new(Mutex::new(None));
+        let state = HttpApiState {
+            ingest_service: Arc::new(DummyIngest {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
+            extract_service: Arc::new(DummyExtract {
+                seen_request: seen_extract.clone(),
+            }),
+            query_service: Arc::new(DummyQuery {
+                seen_batch: Arc::new(Mutex::new(None)),
+            }),
+        };
+        let app = router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/assets:extract")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "tenant_id":"public",
+                    "namespace":"default",
+                    "source_type":"text",
+                    "content":"payload"
+                }"#
+                .to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["text"], "payload");
     }
 }

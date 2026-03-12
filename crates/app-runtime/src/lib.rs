@@ -1,13 +1,17 @@
 use std::{env, sync::Arc};
 
 use async_trait::async_trait;
+use chrono::Utc;
+use hex::encode;
 use rag_core::{
-    AssetId, BatchQueryRequest, BatchQueryResponse, ChunkRepository, CoreError, EmbeddingClient,
-    ExtractRequest, ExtractResponse, ExtractService, IngestRequest, IngestResponse, IngestService,
-    QueryCache, QueryRequest, QueryResponse, QueryService, RequestContext, Scope, SearchRequest,
+    AssetId, BatchQueryRequest, BatchQueryResponse, ChunkRecord, ChunkRepository, CoreError,
+    EmbeddingClient, ExtractRequest, ExtractResponse, ExtractService, IngestRequest,
+    IngestResponse, IngestService, QueryCache, QueryRequest, QueryResponse, QueryService,
+    RequestContext, Scope, SearchRequest,
 };
 use rag_openai_compat::{OpenAiCompatClient, OpenAiCompatConfig};
 use rag_storage_qdrant::{QdrantChunkRepository, QdrantRepositoryConfig};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone)]
 pub struct AppContainer {
@@ -88,17 +92,21 @@ pub fn build_container() -> Result<AppContainer, CoreError> {
         Arc::new(OpenAiCompatClient::new(config.openai.clone())?);
 
     let query_service = Arc::new(RuntimeQueryService {
-        repository,
-        embeddings: embedding_client,
+        repository: repository.clone(),
+        embeddings: embedding_client.clone(),
         cache: None,
-        model: config.embedding_model,
+        model: config.embedding_model.clone(),
         default_k: config.query_top_k_default,
         max_k: config.query_top_k_max,
     });
 
     Ok(AppContainer {
-        ingest_service: Arc::new(NoopIngestService),
-        extract_service: Arc::new(NoopExtractService),
+        ingest_service: Arc::new(SimpleIngestService {
+            repository: repository.clone(),
+            embeddings: embedding_client.clone(),
+            model: config.embedding_model,
+        }),
+        extract_service: Arc::new(SimpleExtractService),
         query_service,
     })
 }
@@ -130,34 +138,90 @@ fn parse_usize_env(name: &str, default: usize) -> Result<usize, CoreError> {
     }
 }
 
-struct NoopIngestService;
+struct SimpleIngestService {
+    repository: Arc<dyn ChunkRepository>,
+    embeddings: Arc<dyn EmbeddingClient>,
+    model: String,
+}
 
 #[async_trait]
-impl IngestService for NoopIngestService {
+impl IngestService for SimpleIngestService {
     async fn ingest(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         request: IngestRequest,
     ) -> Result<IngestResponse, CoreError> {
+        let text = request
+            .content
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| CoreError::Validation("ingest content cannot be empty".to_string()))?;
+
+        let embedding = self
+            .embeddings
+            .embed_texts(&self.model, std::slice::from_ref(text))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::Provider("missing embedding vector".to_string()))?;
+
+        let chunk = ChunkRecord {
+            tenant_id: request.scope.tenant_id.clone(),
+            namespace: request.scope.namespace.clone(),
+            asset_id: request.asset_id.clone(),
+            actor_id: ctx.actor_id.clone(),
+            source_type: request.source_type,
+            source_uri: request.source_uri.clone(),
+            digest: chunk_digest(&request.scope, &request.asset_id, text, 0),
+            chunk_index: 0,
+            page: None,
+            path: None,
+            language: None,
+            mime_type: request.mime_type.clone(),
+            title: None,
+            text: text.clone(),
+            embedding,
+            tags: vec![],
+            created_at: Utc::now(),
+        };
+
+        let summary = self
+            .repository
+            .upsert_chunks(&request.scope, vec![chunk])
+            .await?;
+
         Ok(IngestResponse {
             asset_id: request.asset_id,
-            chunks_written: 0,
+            chunks_written: summary.points_written,
         })
     }
 }
 
-struct NoopExtractService;
+fn chunk_digest(scope: &Scope, asset_id: &AssetId, text: &str, chunk_index: u32) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(scope.tenant_id.0.as_bytes());
+    hasher.update(scope.namespace.0.as_bytes());
+    hasher.update(asset_id.0.as_bytes());
+    hasher.update(chunk_index.to_le_bytes());
+    hasher.update(text.as_bytes());
+    encode(hasher.finalize())
+}
+
+struct SimpleExtractService;
 
 #[async_trait]
-impl ExtractService for NoopExtractService {
+impl ExtractService for SimpleExtractService {
     async fn extract(
         &self,
         _ctx: RequestContext,
-        _request: ExtractRequest,
+        request: ExtractRequest,
     ) -> Result<ExtractResponse, CoreError> {
-        Ok(ExtractResponse {
-            text: String::new(),
-        })
+        let text = request
+            .content
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| CoreError::Validation("extract content cannot be empty".to_string()))?;
+
+        Ok(ExtractResponse { text })
     }
 }
 
