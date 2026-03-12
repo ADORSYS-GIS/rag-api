@@ -2,15 +2,16 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Json as ExtractJson, State},
+    extract::{Json as ExtractJson, Multipart, State},
     http::HeaderMap,
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use rag_core::{
-    ActorId, AssetId, BatchQueryRequest, CoreError, ExtractService, IngestService, Namespace,
-    QueryRequest, QueryService, RequestContext, Scope, TenantId,
+    ActorId, AssetId, BatchQueryRequest, CoreError, ExtractRequest, ExtractService, IngestRequest,
+    IngestService, Namespace, QueryRequest, QueryService, RequestContext, Scope, SourceType,
+    TenantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,12 +28,12 @@ pub fn router(state: LegacyCompatState) -> Router {
         .route("/ids", get(not_implemented))
         .route("/documents", get(not_implemented).delete(not_implemented))
         .route("/documents/{id}/context", get(not_implemented))
-        .route("/embed", post(not_implemented))
-        .route("/embed-upload", post(not_implemented))
-        .route("/local/embed", post(not_implemented))
+        .route("/embed", post(embed))
+        .route("/embed-upload", post(embed_upload))
+        .route("/local/embed", post(local_embed))
         .route("/query", post(query))
         .route("/query_multiple", post(query_multiple))
-        .route("/text", post(not_implemented))
+        .route("/text", post(text))
         .with_state(state)
 }
 
@@ -69,6 +70,23 @@ struct LegacyQueryMultipleBody {
 struct LegacyDocument {
     page_content: String,
     metadata: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyLocalEmbedBody {
+    file_id: String,
+    entity_id: Option<String>,
+    content: Option<String>,
+    known_type: Option<String>,
+    path: Option<String>,
+}
+
+struct LegacyUploadPayload {
+    file_id: Option<String>,
+    entity_id: Option<String>,
+    filename: Option<String>,
+    known_type: Option<String>,
+    content: Option<String>,
 }
 
 async fn query(
@@ -183,6 +201,261 @@ async fn query_multiple(
     }
 }
 
+async fn embed(
+    State(state): State<LegacyCompatState>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> impl IntoResponse {
+    legacy_multipart_ingest(&state, &headers, multipart, SourceType::Upload).await
+}
+
+async fn embed_upload(
+    State(state): State<LegacyCompatState>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> impl IntoResponse {
+    legacy_multipart_ingest(&state, &headers, multipart, SourceType::Upload).await
+}
+
+async fn local_embed(
+    State(state): State<LegacyCompatState>,
+    headers: HeaderMap,
+    ExtractJson(body): ExtractJson<LegacyLocalEmbedBody>,
+) -> impl IntoResponse {
+    if body
+        .content
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .is_none()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail":"content cannot be empty"})),
+        )
+            .into_response();
+    }
+
+    let scope = legacy_scope(&headers);
+    let actor = body
+        .entity_id
+        .clone()
+        .or_else(|| header_string(&headers, "x-actor-id"));
+    let ctx = legacy_ctx(&headers, &scope, actor.clone());
+
+    let request = IngestRequest {
+        scope,
+        asset_id: AssetId(body.file_id.clone()),
+        source_type: SourceType::LocalFile,
+        source_uri: body.path.clone(),
+        content: body.content.clone(),
+        mime_type: body.known_type.clone(),
+    };
+
+    match state.ingest_service.ingest(ctx, request).await {
+        Ok(response) => Json(serde_json::json!({
+            "status": "success",
+            "message": "legacy embed completed",
+            "file_id": response.asset_id.0,
+            "filename": body.path.clone().unwrap_or_else(|| response.asset_id.0.clone()),
+            "known_type": body.known_type.unwrap_or_else(|| "unknown".to_string()),
+        }))
+        .into_response(),
+        Err(err) => core_error_to_response(err),
+    }
+}
+
+async fn text(
+    State(state): State<LegacyCompatState>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> impl IntoResponse {
+    let mut multipart = multipart;
+    let payload = match parse_legacy_upload(&mut multipart).await {
+        Ok(payload) => payload,
+        Err(resp) => return resp.into_response(),
+    };
+
+    if payload.file_id.is_none() || payload.content.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail":"file_id and file are required"})),
+        )
+            .into_response();
+    }
+
+    let scope = legacy_scope(&headers);
+    let actor = payload
+        .entity_id
+        .clone()
+        .or_else(|| header_string(&headers, "x-actor-id"));
+    let ctx = legacy_ctx(&headers, &scope, actor.clone());
+
+    let request = ExtractRequest {
+        scope,
+        source_type: SourceType::Text,
+        source_uri: None,
+        content: payload.content.clone(),
+    };
+
+    match state.extract_service.extract(ctx, request).await {
+        Ok(response) => Json(serde_json::json!({
+            "text": response.text,
+            "file_id": payload.file_id.clone().unwrap(),
+            "filename": payload
+                .filename
+                .clone()
+                .unwrap_or_else(|| payload.file_id.clone().unwrap()),
+            "known_type": payload.known_type.unwrap_or_else(|| "unknown".to_string()),
+        }))
+        .into_response(),
+        Err(err) => core_error_to_response(err),
+    }
+}
+
+async fn legacy_multipart_ingest(
+    state: &LegacyCompatState,
+    headers: &HeaderMap,
+    mut multipart: Multipart,
+    source_type: SourceType,
+) -> Response {
+    let payload = match parse_legacy_upload(&mut multipart).await {
+        Ok(payload) => payload,
+        Err(resp) => return resp,
+    };
+
+    let file_id = match payload.file_id.clone() {
+        Some(id) => id,
+        None => return bad_request("file_id is required"),
+    };
+
+    let content = match payload.content.clone() {
+        Some(text) if !text.trim().is_empty() => text,
+        _ => return bad_request("file contents are required"),
+    };
+
+    let scope = legacy_scope(headers);
+    let actor = payload
+        .entity_id
+        .clone()
+        .or_else(|| header_string(headers, "x-actor-id"));
+    let ctx = legacy_ctx(headers, &scope, actor.clone());
+
+    let request = IngestRequest {
+        scope,
+        asset_id: AssetId(file_id.clone()),
+        source_type,
+        source_uri: None,
+        content: Some(content),
+        mime_type: payload.known_type.clone(),
+    };
+
+    match state.ingest_service.ingest(ctx, request).await {
+        Ok(response) => Json(serde_json::json!({
+            "status": "success",
+            "message": "legacy embed completed",
+            "file_id": response.asset_id.0,
+            "filename": payload.filename.unwrap_or_else(|| file_id.clone()),
+            "known_type": payload.known_type.unwrap_or_else(|| "unknown".to_string()),
+        }))
+        .into_response(),
+        Err(err) => core_error_to_response(err),
+    }
+}
+
+async fn parse_legacy_upload(multipart: &mut Multipart) -> Result<LegacyUploadPayload, Response> {
+    let mut payload = LegacyUploadPayload {
+        file_id: None,
+        entity_id: None,
+        filename: None,
+        known_type: None,
+        content: None,
+    };
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| bad_request("malformed multipart payload"))?
+    {
+        match field.name() {
+            Some("file_id") => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|_| bad_request("invalid file_id field"))?;
+                payload.file_id = Some(text);
+            }
+            Some("entity_id") => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|_| bad_request("invalid entity_id field"))?;
+                payload.entity_id = Some(text);
+            }
+            Some("known_type") => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|_| bad_request("invalid known_type field"))?;
+                payload.known_type = Some(text);
+            }
+            Some("file") => {
+                if payload.content.is_some() {
+                    continue;
+                }
+                if let Some(filename) = field.file_name() {
+                    payload.filename = Some(filename.to_string());
+                }
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|_| bad_request("invalid file data"))?;
+                let text = String::from_utf8(bytes.to_vec())
+                    .map_err(|_| bad_request("file must be text"))?;
+                payload.content = Some(text);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(payload)
+}
+
+fn legacy_scope(headers: &HeaderMap) -> Scope {
+    Scope {
+        tenant_id: TenantId(
+            header_string(headers, "x-tenant-id")
+                .or_else(|| std::env::var("LEGACY_DEFAULT_TENANT").ok())
+                .unwrap_or_else(|| "public".to_string()),
+        ),
+        namespace: Namespace(
+            header_string(headers, "x-namespace")
+                .or_else(|| std::env::var("LEGACY_DEFAULT_NAMESPACE").ok())
+                .unwrap_or_else(|| "librechat".to_string()),
+        ),
+    }
+}
+
+fn legacy_ctx(headers: &HeaderMap, scope: &Scope, actor_id: Option<String>) -> RequestContext {
+    RequestContext {
+        tenant_id: scope.tenant_id.clone(),
+        actor_id: actor_id.map(ActorId),
+        roles: vec![],
+        allowed_namespaces: vec![scope.namespace.clone()],
+        request_id: header_string(headers, "x-request-id")
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+    }
+}
+
+fn bad_request(message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "detail": message
+        })),
+    )
+        .into_response()
+}
+
 fn into_legacy_matches(
     matches: Vec<rag_core::ScoredChunk>,
     actor_id: Option<String>,
@@ -262,8 +535,12 @@ mod tests {
 
     use super::{LegacyCompatState, router};
 
-    struct DummyIngest;
-    struct DummyExtract;
+    struct DummyIngest {
+        seen_request: Arc<Mutex<Option<IngestRequest>>>,
+    }
+    struct DummyExtract {
+        seen_request: Arc<Mutex<Option<ExtractRequest>>>,
+    }
     struct DummyQuery {
         seen_request: Arc<Mutex<Option<QueryRequest>>>,
         seen_batch_request: Arc<Mutex<Option<BatchQueryRequest>>>,
@@ -276,9 +553,10 @@ mod tests {
             _ctx: RequestContext,
             request: IngestRequest,
         ) -> Result<IngestResponse, CoreError> {
+            *self.seen_request.lock().unwrap() = Some(request.clone());
             Ok(IngestResponse {
                 asset_id: request.asset_id,
-                chunks_written: 0,
+                chunks_written: 1,
             })
         }
     }
@@ -288,10 +566,11 @@ mod tests {
         async fn extract(
             &self,
             _ctx: RequestContext,
-            _request: ExtractRequest,
+            request: ExtractRequest,
         ) -> Result<ExtractResponse, CoreError> {
+            *self.seen_request.lock().unwrap() = Some(request.clone());
             Ok(ExtractResponse {
-                text: "ok".to_string(),
+                text: request.content.unwrap_or_else(|| "ok".to_string()),
             })
         }
     }
@@ -365,8 +644,12 @@ mod tests {
         let seen = Arc::new(Mutex::new(None));
         let seen_batch = Arc::new(Mutex::new(None));
         let state = LegacyCompatState {
-            ingest_service: Arc::new(DummyIngest),
-            extract_service: Arc::new(DummyExtract),
+            ingest_service: Arc::new(DummyIngest {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
+            extract_service: Arc::new(DummyExtract {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
             query_service: Arc::new(DummyQuery {
                 seen_request: seen.clone(),
                 seen_batch_request: seen_batch.clone(),
@@ -401,8 +684,12 @@ mod tests {
         let seen = Arc::new(Mutex::new(None));
         let seen_batch = Arc::new(Mutex::new(None));
         let state = LegacyCompatState {
-            ingest_service: Arc::new(DummyIngest),
-            extract_service: Arc::new(DummyExtract),
+            ingest_service: Arc::new(DummyIngest {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
+            extract_service: Arc::new(DummyExtract {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
             query_service: Arc::new(DummyQuery {
                 seen_request: seen.clone(),
                 seen_batch_request: seen_batch.clone(),
@@ -432,5 +719,136 @@ mod tests {
         assert_eq!(captured_batch.asset_ids.len(), 2);
         assert_eq!(captured_batch.asset_ids[0].0, "abc-123");
         assert_eq!(captured_batch.k, 5);
+    }
+
+    #[tokio::test]
+    async fn post_embed_calls_ingest_and_returns_metadata() {
+        let seen_ingest = Arc::new(Mutex::new(None));
+        let state = LegacyCompatState {
+            ingest_service: Arc::new(DummyIngest {
+                seen_request: seen_ingest.clone(),
+            }),
+            extract_service: Arc::new(DummyExtract {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
+            query_service: Arc::new(DummyQuery {
+                seen_request: Arc::new(Mutex::new(None)),
+                seen_batch_request: Arc::new(Mutex::new(None)),
+            }),
+        };
+        let app = router(state);
+
+        let boundary = "BOUND";
+        let body = format!(
+            "--{b}\r\nContent-Disposition: form-data; name=\"file_id\"\r\n\r\nlegacy-1\r\n\
+             --{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"name.txt\"\r\n\
+             Content-Type: text/plain\r\n\r\ndata\r\n--{b}--\r\n",
+            b = boundary
+        );
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/embed")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={}", boundary),
+            )
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(value["status"], "success");
+        assert_eq!(value["file_id"], "legacy-1");
+        assert!(seen_ingest.lock().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn post_local_embed_calls_ingest_with_source_type() {
+        let seen_ingest = Arc::new(Mutex::new(None));
+        let state = LegacyCompatState {
+            ingest_service: Arc::new(DummyIngest {
+                seen_request: seen_ingest.clone(),
+            }),
+            extract_service: Arc::new(DummyExtract {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
+            query_service: Arc::new(DummyQuery {
+                seen_request: Arc::new(Mutex::new(None)),
+                seen_batch_request: Arc::new(Mutex::new(None)),
+            }),
+        };
+        let app = router(state);
+
+        let body = r#"{
+            "file_id":"local-1",
+            "content":"payload",
+            "known_type":"text/plain",
+            "path":"/tmp/local.txt"
+        }"#;
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/local/embed")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(value["filename"], "/tmp/local.txt");
+        assert_eq!(value["known_type"], "text/plain");
+        assert!(seen_ingest.lock().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn post_text_returns_extracted_text_and_file_id() {
+        let seen_extract = Arc::new(Mutex::new(None));
+        let state = LegacyCompatState {
+            ingest_service: Arc::new(DummyIngest {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
+            extract_service: Arc::new(DummyExtract {
+                seen_request: seen_extract.clone(),
+            }),
+            query_service: Arc::new(DummyQuery {
+                seen_request: Arc::new(Mutex::new(None)),
+                seen_batch_request: Arc::new(Mutex::new(None)),
+            }),
+        };
+        let app = router(state);
+
+        let boundary = "BND";
+        let body = format!(
+            "--{b}\r\nContent-Disposition: form-data; name=\"file_id\"\r\n\r\ntext-1\r\n\
+             --{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"txt.txt\"\r\n\
+             Content-Type: text/plain\r\n\r\nhello\r\n--{b}--\r\n",
+            b = boundary
+        );
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/text")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={}", boundary),
+            )
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(value["text"], "hello");
+        assert_eq!(value["file_id"], "text-1");
+        assert!(seen_extract.lock().unwrap().is_some());
     }
 }

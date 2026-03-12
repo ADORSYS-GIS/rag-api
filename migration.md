@@ -721,3 +721,29 @@ In short:
 
 - `legacy-proxy` is allowed to be ugly
 - `rag-api.rs` and `rag-mcp.rs` are not
+
+## Handoff Notes for Next LLM
+
+### Progress
+- rust workspace scaffolds and canonical REST + legacy query adapters are wired up, but the runtime still points at `SampleQueryService`. The `ChunkRepository` with deterministic chunk metadata and the Qdrant helpers for collection bootstrapping, upsert, search, and delete are implemented and passing `cargo check`/`cargo test`.
+- there is still a placeholder `OpenAI-compatible` provider that returns `CoreError::NotImplemented`, and `legacy-proxy` plus `http-api` still rely on sample query behavior rather than the shared production query path.
+
+### Context
+- this document is the migration plan from the existing Python RAG API to a Rust-based trio of services (`legacy-proxy`, `rag-api.rs`, `rag-mcp.rs`), with iteration 2 focused on wiring the real query pipeline while preserving legacy compatibility at the edge.
+- the current feature set targets Qdrant as the only persistent store, Redis for transient caches/locks, and OpenAI-compatible providers for embeddings/document understanding.
+
+### Key Decisions
+- persist all chunk metadata in Qdrant payloads, indexed by the canonical domain keys (`tenant_id`, `namespace`, `asset_id`, etc.) and grouped by `collection` names that stay consistent within an embedding dimension family; deterministic point IDs come from `(tenant_id, namespace, asset_id, chunk_index, digest)`.
+- provider integration is limited to OpenAI-compatible clients; there are two abstractions (`EmbeddingClient` and `DocumentUnderstandingClient`), and configuration defaults to `text-embedding-3-small` with an ability to validate embedding dimension versus collection dimension per the runtime contract.
+- legacy compatibility is confined to `legacy-proxy`, which translates old LibreChat/Azure routes into the canonical REST surface (`POST /v1/query`, `/assets:ingest`, etc.) so that the shared core can stay clean.
+
+### Next Steps
+1. Complete Iteration 2 by replacing `SampleQueryService` in `crates/app-runtime/src/lib.rs` with the production `QueryService`, wiring it to the `ChunkRepository`, the OpenAI `EmbeddingClient`, and the optional query cache, then propagate the same logic down into both the canonical `/v1/query` handler and the legacy `/query` translator.
+2. Implement the real `OpenAI-compatible` provider in `crates/openai-compat/src/lib.rs`, normalizing upstream failures into `CoreError::Provider`, and ensure `crates/http-api/src/lib.rs`/`crates/legacy-compat/src/lib.rs` map those failures to stable API status codes without leaking schema details.
+3. After the production query path is live, add integration tests (including negative cases for provider timeouts and empty queries) plus query filters that honor `tenant_id`, `namespace`, and runtime limits; keep monitoring `Runtime Configuration Contract (Draft v1)` to ensure environment validation rules and startup checks are in place.
+
+### References
+- [Iteration 2: Real Query Pipeline Wiring](#iteration-2-real-query-pipeline-wiring)
+- [OpenAI-Compatible Provider Layer](#openai-compatible-provider-layer)
+- [Runtime Configuration Contract (Draft v1)](#runtime-configuration-contract-draft-v1)
+- [Core Domain Model](#core-domain-model)
