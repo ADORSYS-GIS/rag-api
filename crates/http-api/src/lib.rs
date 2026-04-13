@@ -1,3 +1,8 @@
+//! HTTP API adapter exposing the canonical `/v1/...` surface documented in `docs/api/openapi.yaml`.
+//! The adapter keeps request validation, header-to-context translation, and error mapping centralized
+//! so the shared `rag-core` services never depend on transport details. The router currently covers the
+//! ingest/extract/query endpoints plus health and readiness probes, leaving the remaining asset paths
+//! as explicit placeholders until those services land.
 use std::sync::Arc;
 
 use axum::{
@@ -389,6 +394,7 @@ mod tests {
     }
     struct DummyQuery {
         seen_batch: Arc<Mutex<Option<BatchQueryRequest>>>,
+        seen_query: Arc<Mutex<Option<QueryRequest>>>,
     }
 
     #[async_trait]
@@ -427,6 +433,8 @@ mod tests {
             _ctx: RequestContext,
             request: QueryRequest,
         ) -> Result<QueryResponse, CoreError> {
+            *self.seen_query.lock().unwrap() = Some(request.clone());
+
             let chunk = ChunkRecord {
                 tenant_id: request.scope.tenant_id,
                 namespace: request.scope.namespace,
@@ -488,6 +496,7 @@ mod tests {
     #[tokio::test]
     async fn post_v1_query_returns_matches() {
         let seen_batch = Arc::new(Mutex::new(None));
+        let seen_query = Arc::new(Mutex::new(None));
         let state = HttpApiState {
             ingest_service: Arc::new(DummyIngest {
                 seen_request: Arc::new(Mutex::new(None)),
@@ -497,6 +506,7 @@ mod tests {
             }),
             query_service: Arc::new(DummyQuery {
                 seen_batch: seen_batch.clone(),
+                seen_query: seen_query.clone(),
             }),
         };
         let app = router(state);
@@ -522,6 +532,7 @@ mod tests {
     #[tokio::test]
     async fn post_v1_query_batch_returns_matches() {
         let seen_batch = Arc::new(Mutex::new(None));
+        let seen_query = Arc::new(Mutex::new(None));
         let state = HttpApiState {
             ingest_service: Arc::new(DummyIngest {
                 seen_request: Arc::new(Mutex::new(None)),
@@ -531,6 +542,7 @@ mod tests {
             }),
             query_service: Arc::new(DummyQuery {
                 seen_batch: seen_batch.clone(),
+                seen_query: seen_query.clone(),
             }),
         };
         let app = router(state);
@@ -560,6 +572,7 @@ mod tests {
     #[tokio::test]
     async fn post_v1_assets_ingest_returns_ok() {
         let seen_ingest = Arc::new(Mutex::new(None));
+        let seen_query = Arc::new(Mutex::new(None));
         let state = HttpApiState {
             ingest_service: Arc::new(DummyIngest {
                 seen_request: seen_ingest.clone(),
@@ -569,6 +582,7 @@ mod tests {
             }),
             query_service: Arc::new(DummyQuery {
                 seen_batch: Arc::new(Mutex::new(None)),
+                seen_query: seen_query.clone(),
             }),
         };
         let app = router(state);
@@ -600,6 +614,7 @@ mod tests {
     #[tokio::test]
     async fn post_v1_assets_extract_returns_text() {
         let seen_extract = Arc::new(Mutex::new(None));
+        let seen_query = Arc::new(Mutex::new(None));
         let state = HttpApiState {
             ingest_service: Arc::new(DummyIngest {
                 seen_request: Arc::new(Mutex::new(None)),
@@ -609,6 +624,7 @@ mod tests {
             }),
             query_service: Arc::new(DummyQuery {
                 seen_batch: Arc::new(Mutex::new(None)),
+                seen_query: seen_query.clone(),
             }),
         };
         let app = router(state);
@@ -634,5 +650,77 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["text"], "payload");
+    }
+
+    #[tokio::test]
+    async fn ingest_then_query_flow_honors_scope() {
+        let seen_ingest = Arc::new(Mutex::new(None));
+        let seen_query = Arc::new(Mutex::new(None));
+        let state = HttpApiState {
+            ingest_service: Arc::new(DummyIngest {
+                seen_request: seen_ingest.clone(),
+            }),
+            extract_service: Arc::new(DummyExtract {
+                seen_request: Arc::new(Mutex::new(None)),
+            }),
+            query_service: Arc::new(DummyQuery {
+                seen_batch: Arc::new(Mutex::new(None)),
+                seen_query: seen_query.clone(),
+            }),
+        };
+        let service = router(state);
+
+        let ingest_req = Request::builder()
+            .method("POST")
+            .uri("/v1/assets:ingest")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "tenant_id":"tenant-e2e",
+                    "namespace":"namespace-e2e",
+                    "asset_id":"asset-e2e",
+                    "source_type":"text",
+                    "content":"e2e payload"
+                }"#
+                .to_string(),
+            ))
+            .unwrap();
+        let ingest_response = service.clone().oneshot(ingest_req).await.unwrap();
+        assert_eq!(ingest_response.status(), StatusCode::OK);
+        let recorded_ingest = seen_ingest.lock().unwrap().clone().unwrap();
+        assert_eq!(recorded_ingest.asset_id.0, "asset-e2e");
+        assert_eq!(recorded_ingest.scope.namespace.0, "namespace-e2e");
+
+        let query_req = Request::builder()
+            .method("POST")
+            .uri("/v1/query")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "query":"e2e query",
+                    "asset_id":"asset-e2e",
+                    "tenant_id":"tenant-e2e",
+                    "namespace":"namespace-e2e",
+                    "k":2
+                }"#
+                .to_string(),
+            ))
+            .unwrap();
+        let query_response = service.clone().oneshot(query_req).await.unwrap();
+        assert_eq!(query_response.status(), StatusCode::OK);
+
+        let bytes = query_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(value["matches"].is_array());
+
+        let recorded_query = seen_query.lock().unwrap().clone().unwrap();
+        assert_eq!(recorded_query.asset_id.unwrap().0, "asset-e2e");
+        assert_eq!(recorded_query.scope.namespace.0, "namespace-e2e");
+        assert_eq!(recorded_query.scope.tenant_id.0, "tenant-e2e");
     }
 }

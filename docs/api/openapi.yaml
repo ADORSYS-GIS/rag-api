@@ -1,0 +1,264 @@
+openapi: "3.1.0"
+info:
+  title: RAG API (canonical)
+  version: 0.1.0
+  description: |
+    Canonical REST surface for the Rust RAG platform. Legacy clients should be routed
+    through `legacy-proxy`, which translates LibreChat/Azure routes into these endpoints.
+servers:
+  - url: http://localhost:8080
+    description: local development
+paths:
+  /healthz:
+    get:
+      summary: Service health
+      responses:
+        "200":
+          description: service is up
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /readyz:
+    get:
+      summary: Readiness probe
+      responses:
+        "200":
+          description: service is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /v1/assets:ingest:
+    post:
+      summary: Ingest, chunk, embed, and persist an asset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestRequest"
+      responses:
+        "200":
+          description: asset accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/assets:extract:
+    post:
+      summary: Extract text without persisting chunks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtractRequest"
+      responses:
+        "200":
+          description: extracted text
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/query:
+    post:
+      summary: Query a single asset or namespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QueryRequest"
+      responses:
+        "200":
+          description: scored matches
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/query:batch:
+    post:
+      summary: Query multiple assets at once
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchQueryRequest"
+      responses:
+        "200":
+          description: scored matches grouped by asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchQueryResponse"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  schemas:
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        service:
+          type: string
+          example: rag-api.rs
+    Scope:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        namespace:
+          type: string
+      required:
+        - tenant_id
+        - namespace
+    QueryRequest:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        namespace:
+          type: string
+        asset_id:
+          type: string
+        query:
+          type: string
+        k:
+          type: integer
+          minimum: 1
+      required:
+        - query
+    BatchQueryRequest:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        namespace:
+          type: string
+        asset_ids:
+          type: array
+          items:
+            type: string
+        query:
+          type: string
+        k:
+          type: integer
+          minimum: 1
+      required:
+        - query
+        - asset_ids
+    QueryResponse:
+      type: object
+      properties:
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScoredChunk"
+    BatchQueryResponse:
+      type: object
+      properties:
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScoredChunk"
+    ScoredChunk:
+      type: object
+      properties:
+        chunk:
+          $ref: "#/components/schemas/ChunkRecord"
+        score:
+          type: number
+          format: float
+    ChunkRecord:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        namespace:
+          type: string
+        asset_id:
+          type: string
+        actor_id:
+          type: string
+          nullable: true
+        source_type:
+          type: string
+        digest:
+          type: string
+        chunk_index:
+          type: integer
+        text:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    IngestRequest:
+      allOf:
+        - $ref: "#/components/schemas/Scope"
+      type: object
+      properties:
+        asset_id:
+          type: string
+        source_type:
+          type: string
+        source_uri:
+          type: string
+          nullable: true
+        content:
+          type: string
+          nullable: true
+        mime_type:
+          type: string
+          nullable: true
+      required:
+        - asset_id
+        - source_type
+    IngestResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+        chunks_written:
+          type: integer
+    ExtractRequest:
+      allOf:
+        - $ref: "#/components/schemas/Scope"
+      type: object
+      properties:
+        source_type:
+          type: string
+        source_uri:
+          type: string
+          nullable: true
+        content:
+          type: string
+          nullable: true
+      required:
+        - source_type
+    ExtractResponse:
+      type: object
+      properties:
+        text:
+          type: string
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+  responses:
+    Error:
+      description: error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

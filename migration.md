@@ -722,6 +722,11 @@ In short:
 - `legacy-proxy` is allowed to be ugly
 - `rag-api.rs` and `rag-mcp.rs` are not
 
+## Documentation & Schema
+
+- **OpenAPI 3 specification**: The canonical HTTP surface documented in `docs/api/openapi.yaml` mirrors the routes currently scaffolded in `crates/http-api` and will be the source of truth for client integration and future code generation.
+- **Testing strategy**: `docs/testing/README.md` describes the unit/integration/e2e plan (including the documented embed→query→context flow) so the next contributor knows which layers are covered and what remains.
+
 ## Handoff Notes for Next LLM
 
 ### Progress
