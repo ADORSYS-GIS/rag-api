@@ -17,6 +17,8 @@ services:
     build: .
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - QDRANT_URL=http://qdrant:6334
       - LEGACY_PROXY_BIND_ADDR=0.0.0.0:8000
@@ -30,6 +32,8 @@ services:
     build: .
     ports:
       - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - QDRANT_URL=http://qdrant:6334
       - RAG_SERVER_BIND_ADDR=0.0.0.0:8080
