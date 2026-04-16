@@ -11,5 +11,6 @@ qdrant-client = "1.17.0"
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 rag-core = { path = "../core" }

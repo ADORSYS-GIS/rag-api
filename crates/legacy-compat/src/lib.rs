@@ -14,6 +14,7 @@ use rag_core::{
     TenantId,
 };
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn, error, debug};
 
 #[derive(Clone)]
 pub struct LegacyCompatState {
@@ -206,6 +207,7 @@ async fn embed(
     headers: HeaderMap,
     multipart: Multipart,
 ) -> impl IntoResponse {
+    info!("Received request to /embed endpoint");
     legacy_multipart_ingest(&state, &headers, multipart, SourceType::Upload).await
 }
 
@@ -214,6 +216,7 @@ async fn embed_upload(
     headers: HeaderMap,
     multipart: Multipart,
 ) -> impl IntoResponse {
+    info!("Received request to /embed-upload endpoint");
     legacy_multipart_ingest(&state, &headers, multipart, SourceType::Upload).await
 }
 
@@ -222,12 +225,15 @@ async fn local_embed(
     headers: HeaderMap,
     ExtractJson(body): ExtractJson<LegacyLocalEmbedBody>,
 ) -> impl IntoResponse {
+    info!("Received request to /local/embed endpoint with file_id: {:?}", body.file_id);
+    
     if body
         .content
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .is_none()
     {
+        warn!("Content is empty for file_id: {:?}", body.file_id);
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"detail":"content cannot be empty"})),
@@ -269,13 +275,30 @@ async fn text(
     headers: HeaderMap,
     multipart: Multipart,
 ) -> impl IntoResponse {
+    info!("Received request to /text endpoint");
+    
+    // Log headers for debugging
+    for (key, value) in headers.iter() {
+        debug!("Header: {} = {:?}", key, value);
+    }
+    
     let mut multipart = multipart;
     let payload = match parse_legacy_upload(&mut multipart).await {
-        Ok(payload) => payload,
-        Err(resp) => return resp.into_response(),
+        Ok(payload) => {
+            info!("Successfully parsed multipart payload: file_id={:?}, filename={:?}, known_type={:?}, content_len={:?}", 
+                  payload.file_id, payload.filename, payload.known_type, 
+                  payload.content.as_ref().map(|c| c.len()));
+            payload
+        },
+        Err(resp) => {
+            error!("Failed to parse multipart payload");
+            return resp.into_response();
+        }
     };
 
     if payload.file_id.is_none() || payload.content.is_none() {
+        warn!("Missing required fields: file_id={:?}, content_present={}", 
+              payload.file_id, payload.content.is_some());
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"detail":"file_id and file are required"})),
@@ -290,6 +313,8 @@ async fn text(
         .or_else(|| header_string(&headers, "x-actor-id"));
     let ctx = legacy_ctx(&headers, &scope, actor.clone());
 
+    info!("Processing extract request: scope={:?}, actor={:?}", scope, actor);
+
     let request = ExtractRequest {
         scope,
         source_type: SourceType::Text,
@@ -298,17 +323,24 @@ async fn text(
     };
 
     match state.extract_service.extract(ctx, request).await {
-        Ok(response) => Json(serde_json::json!({
-            "text": response.text,
-            "file_id": payload.file_id.clone().unwrap(),
-            "filename": payload
-                .filename
-                .clone()
-                .unwrap_or_else(|| payload.file_id.clone().unwrap()),
-            "known_type": payload.known_type.unwrap_or_else(|| "unknown".to_string()),
-        }))
-        .into_response(),
-        Err(err) => core_error_to_response(err),
+        Ok(response) => {
+            info!("Successfully extracted text: file_id={:?}, text_len={}", 
+                  payload.file_id, response.text.len());
+            Json(serde_json::json!({
+                "text": response.text,
+                "file_id": payload.file_id.clone().unwrap(),
+                "filename": payload
+                    .filename
+                    .clone()
+                    .unwrap_or_else(|| payload.file_id.clone().unwrap()),
+                "known_type": payload.known_type.unwrap_or_else(|| "unknown".to_string()),
+            }))
+            .into_response()
+        },
+        Err(err) => {
+            error!("Extract service failed: error={}", err);
+            core_error_to_response(err)
+        }
     }
 }
 
@@ -322,6 +354,9 @@ async fn legacy_multipart_ingest(
         Ok(payload) => payload,
         Err(resp) => return resp,
     };
+    
+    info!("Processing upload: file_id={:?}, filename={:?}, known_type={:?}", 
+          payload.file_id, payload.filename, payload.known_type);
 
     let file_id = match payload.file_id.clone() {
         Some(id) => id,
@@ -350,15 +385,22 @@ async fn legacy_multipart_ingest(
     };
 
     match state.ingest_service.ingest(ctx, request).await {
-        Ok(response) => Json(serde_json::json!({
-            "status": "success",
-            "message": "legacy embed completed",
-            "file_id": response.asset_id.0,
-            "filename": payload.filename.unwrap_or_else(|| file_id.clone()),
-            "known_type": payload.known_type.unwrap_or_else(|| "unknown".to_string()),
-        }))
-        .into_response(),
-        Err(err) => core_error_to_response(err),
+        Ok(response) => {
+            info!("Successfully ingested file: file_id={}, chunks_written={}", 
+                  response.asset_id.0, response.chunks_written);
+            Json(serde_json::json!({
+                "status": "success",
+                "message": "legacy embed completed",
+                "file_id": response.asset_id.0,
+                "filename": payload.filename.clone().unwrap_or_else(|| file_id.clone()),
+                "known_type": payload.known_type.clone().unwrap_or_else(|| "unknown".to_string()),
+            }))
+            .into_response()
+        },
+        Err(err) => {
+            error!("Failed to ingest file: file_id={}, error={}", file_id, err);
+            core_error_to_response(err)
+        }
     }
 }
 

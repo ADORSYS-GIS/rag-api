@@ -15,6 +15,7 @@ use rag_core::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
+use tracing::{info, error, debug};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -300,29 +301,45 @@ impl QdrantChunkRepository {
 impl ChunkRepository for QdrantChunkRepository {
     async fn upsert_chunks(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         chunks: Vec<ChunkRecord>,
     ) -> Result<UpsertSummary, CoreError> {
+        info!(
+            "Qdrant upsert_chunks: collection={}, tenant={}, namespace={}, chunks_count={}",
+            self.config.collection_name,
+            scope.tenant_id.0,
+            scope.namespace.0,
+            chunks.len()
+        );
+
         self.ensure_schema().await?;
 
         if chunks.is_empty() {
+            debug!("Qdrant upsert_chunks: no chunks to upsert, returning early");
             return Ok(UpsertSummary { points_written: 0 });
         }
 
         let mut points = Vec::with_capacity(chunks.len());
         for chunk in chunks {
             if chunk.embedding.is_empty() {
+                error!("Qdrant upsert_chunks: chunk.embedding is empty for asset_id={}, chunk_index={}", 
+                       chunk.asset_id.0, chunk.chunk_index);
                 return Err(CoreError::Validation(
                     "chunk.embedding cannot be empty when upserting to qdrant".to_string(),
                 ));
             }
 
             let payload = Self::chunk_to_payload(&chunk)?;
-            let point = PointStruct::new(Self::point_id(&chunk), chunk.embedding, payload);
+            let point = PointStruct::new(Self::point_id(&chunk), chunk.embedding.clone(), payload);
             points.push(point);
         }
 
         let points_written = points.len();
+
+        debug!(
+            "Qdrant upsert_chunks: writing {} points to collection={}",
+            points_written, self.config.collection_name
+        );
 
         self.client
             .upsert_points(
@@ -333,7 +350,15 @@ impl ChunkRepository for QdrantChunkRepository {
                 .wait(true),
             )
             .await
-            .map_err(|e| CoreError::Storage(format!("qdrant upsert failed: {e}")))?;
+            .map_err(|e| {
+                error!("Qdrant upsert_chunks: upsert_points failed: {}", e);
+                CoreError::Storage(format!("qdrant upsert failed: {e}"))
+            })?;
+
+        info!(
+            "Qdrant upsert_chunks: successfully wrote {} points to collection={}",
+            points_written, self.config.collection_name
+        );
 
         Ok(UpsertSummary { points_written })
     }
@@ -420,9 +445,19 @@ impl ChunkRepository for QdrantChunkRepository {
         scope: &Scope,
         request: SearchRequest,
     ) -> Result<Vec<ScoredChunk>, CoreError> {
+        info!(
+            "Qdrant search: collection={}, tenant={}, namespace={}, k={}, asset_ids_count={}",
+            self.config.collection_name,
+            scope.tenant_id.0,
+            scope.namespace.0,
+            request.k,
+            request.asset_ids.len()
+        );
+
         self.ensure_schema().await?;
 
         if request.query_vector.is_empty() {
+            error!("Qdrant search: query_vector is empty");
             return Err(CoreError::Validation(
                 "query_vector cannot be empty".to_string(),
             ));
@@ -441,7 +476,16 @@ impl ChunkRepository for QdrantChunkRepository {
                 .with_payload(true),
             )
             .await
-            .map_err(|e| CoreError::Storage(format!("qdrant search failed: {e}")))?;
+            .map_err(|e| {
+                error!("Qdrant search: search_points failed: {}", e);
+                CoreError::Storage(format!("qdrant search failed: {e}"))
+            })?;
+
+        let results_count = response.result.len();
+        info!(
+            "Qdrant search: found {} results in collection={}",
+            results_count, self.config.collection_name
+        );
 
         response
             .result
