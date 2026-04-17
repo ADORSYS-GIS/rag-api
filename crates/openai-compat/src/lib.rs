@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use rag_core::{CoreError, DocumentUnderstandingClient, EmbeddingClient};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
+use serde_json;
 use tokio::time::{Duration, sleep};
+use tracing::{info, warn, error, debug};
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatConfig {
@@ -64,6 +66,13 @@ impl OpenAiCompatClient {
         request: EmbeddingsRequest<'_>,
     ) -> Result<EmbeddingsResponse, CoreError> {
         let url = self.embeddings_endpoint();
+        info!(
+            "OpenAI embedding request: model={}, inputs_count={}, url={}",
+            request.model,
+            request.input.len(),
+            url
+        );
+
         let mut attempt: u32 = 0;
         let max_attempts = self.config.max_retries.saturating_add(1);
 
@@ -75,14 +84,20 @@ impl OpenAiCompatClient {
                 req = req.bearer_auth(api_key);
             }
 
+            debug!("OpenAI embedding request attempt {}/{}", attempt, max_attempts);
+
             let response = match req.send().await {
                 Ok(resp) => resp,
                 Err(err) if attempt < max_attempts => {
-                    tracing::warn!(attempt, max_attempts, error=%err, "embeddings request failed, retrying");
+                    warn!(
+                        "OpenAI embedding request failed on attempt {}/{}: {}",
+                        attempt, max_attempts, err
+                    );
                     sleep(backoff_delay(attempt)).await;
                     continue;
                 }
                 Err(err) => {
+                    error!("OpenAI embedding request failed: {}", err);
                     return Err(CoreError::Provider(format!(
                         "embeddings request failed: {err}"
                     )));
@@ -91,7 +106,9 @@ impl OpenAiCompatClient {
 
             let status = response.status();
             if status.is_success() {
+                debug!("OpenAI embedding request successful: status={}", status);
                 return response.json::<EmbeddingsResponse>().await.map_err(|e| {
+                    error!("OpenAI embedding response parsing failed: {}", e);
                     CoreError::Provider(format!("invalid embeddings response payload: {e}"))
                 });
             }
@@ -101,18 +118,17 @@ impl OpenAiCompatClient {
                 .await
                 .unwrap_or_else(|_| "<unreadable body>".to_string());
             let message = parse_error_message(status, &body_text);
+            
             if should_retry_status(status) && attempt < max_attempts {
-                tracing::warn!(
-                    attempt,
-                    max_attempts,
-                    status = %status,
-                    message,
-                    "embeddings upstream returned retryable status"
+                warn!(
+                    "OpenAI embedding request returned retryable status {}/{}: status={}, message={}",
+                    attempt, max_attempts, status, message
                 );
                 sleep(backoff_delay(attempt)).await;
                 continue;
             }
 
+            error!("OpenAI embedding request failed permanently: status={}, message={}", status, message);
             return Err(CoreError::Provider(message));
         }
     }
@@ -128,13 +144,13 @@ fn backoff_delay(attempt: u32) -> Duration {
 }
 
 fn parse_error_message(status: StatusCode, raw_body: &str) -> String {
-    if let Ok(parsed) = serde_json::from_str::<EmbeddingsErrorEnvelope>(raw_body)
-        && !parsed.error.message.trim().is_empty()
-    {
-        return format!(
-            "upstream embeddings error ({status}): {}",
-            parsed.error.message
-        );
+    if let Ok(parsed) = serde_json::from_str::<EmbeddingsErrorEnvelope>(raw_body) {
+        if !parsed.error.message.trim().is_empty() {
+            return format!(
+                "upstream embeddings error ({status}): {}",
+                parsed.error.message
+            );
+        }
     }
 
     format!("upstream embeddings error ({status}): {raw_body}")
@@ -173,19 +189,29 @@ impl EmbeddingClient for OpenAiCompatClient {
         model: &str,
         inputs: &[String],
     ) -> Result<Vec<Vec<f32>>, CoreError> {
+        info!(
+            "OpenAI embed_texts: model={}, inputs_count={}, first_input_len={}",
+            model,
+            inputs.len(),
+            inputs.first().map(|s| s.len()).unwrap_or(0)
+        );
+
         if model.trim().is_empty() {
+            error!("OpenAI embed_texts: model cannot be empty");
             return Err(CoreError::Validation(
                 "embedding model cannot be empty".to_string(),
             ));
         }
 
         if inputs.is_empty() {
+            error!("OpenAI embed_texts: inputs cannot be empty");
             return Err(CoreError::Validation(
                 "embedding input cannot be empty".to_string(),
             ));
         }
 
         if inputs.iter().any(|item| item.trim().is_empty()) {
+            error!("OpenAI embed_texts: inputs contain empty text items");
             return Err(CoreError::Validation(
                 "embedding input contains an empty text item".to_string(),
             ));
@@ -198,6 +224,11 @@ impl EmbeddingClient for OpenAiCompatClient {
         let response = self.call_embeddings(request).await?;
 
         if response.data.len() != inputs.len() {
+            error!(
+                "OpenAI embed_texts: response count mismatch: requested {}, got {}",
+                inputs.len(),
+                response.data.len()
+            );
             return Err(CoreError::Provider(format!(
                 "embedding response count mismatch: requested {}, got {}",
                 inputs.len(),
@@ -206,22 +237,39 @@ impl EmbeddingClient for OpenAiCompatClient {
         }
 
         let mut vectors = Vec::with_capacity(response.data.len());
-        for row in response.data {
+        for (i, row) in response.data.iter().enumerate() {
             if row.embedding.is_empty() {
+                error!("OpenAI embed_texts: empty vector at index {}", i);
                 return Err(CoreError::Provider(
                     "embedding response contained an empty vector".to_string(),
                 ));
             }
-            vectors.push(row.embedding);
+            vectors.push(row.embedding.clone());
         }
+        
+        info!(
+            "OpenAI embed_texts: successfully generated {} vectors, each with {} dimensions",
+            vectors.len(),
+            vectors.first().map(|v| v.len()).unwrap_or(0)
+        );
+
         Ok(vectors)
     }
 
     async fn embed_query(&self, model: &str, input: &str) -> Result<Vec<f32>, CoreError> {
+        info!(
+            "OpenAI embed_query: model={}, input_len={}",
+            model,
+            input.len()
+        );
+
         let mut vectors = self.embed_texts(model, &[input.to_string()]).await?;
         vectors
             .pop()
-            .ok_or_else(|| CoreError::Provider("missing embedding vector".to_string()))
+            .ok_or_else(|| {
+                error!("OpenAI embed_query: missing embedding vector");
+                CoreError::Provider("missing embedding vector".to_string())
+            })
     }
 }
 

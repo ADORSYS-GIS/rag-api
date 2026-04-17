@@ -1,0 +1,46 @@
+version: 1.3.8
+
+cache: true
+
+endpoints:
+  all:
+    streamRate: 5
+  custom:
+    - name: Converse
+      apiKey: ${CONVERSE_API_KEY}
+      baseURL: ${CONVERSE_BASE_URL}
+      modelDisplayLabel: Converse
+      addParams:
+        rag_api: true
+      models:
+        fetch: false
+        default:
+          - glm-5
+          - kimi-k2.5
+          - gemini-2.5-flash
+          - kimi-k2-thinking
+
+fileConfig:
+  endpoints:
+    openAI:
+      disabled: true
+    default:
+      fileLimit: 5
+      fileSizeLimit: 20
+      totalSizeLimit: 50
+
+interface:
+  endpointsMenu: true
+  modelSelect: true
+  parameters: true
+  presets: true
+  agents:
+    use: false
+    create: false
+    share: false
+    public: false
+  mcpServers:
+    use: false
+    create: false
+    share: false
+    public: false

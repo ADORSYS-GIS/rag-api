@@ -13,5 +13,105 @@ services:
       - "6379:6379"
     command: ["redis-server", "--save", "", "--appendonly", "no"]
 
+  legacy_proxy:
+    build: .
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - QDRANT_URL=http://qdrant:6334
+      - LEGACY_PROXY_BIND_ADDR=0.0.0.0:8000
+    depends_on:
+      - qdrant
+    env_file:
+      - .env
+    command: ["/app/legacy-proxy"]
+
+  rag_api:
+    build: .
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - QDRANT_URL=http://qdrant:6334
+      - RAG_SERVER_BIND_ADDR=0.0.0.0:8080
+    depends_on:
+      - qdrant
+    env_file:
+      - .env
+    command: ["/app/rag-api"]
+
+  rag_mcp:
+    build: .
+    ports:
+      - "8081:8081"
+    environment:
+      - QDRANT_URL=http://qdrant:6334
+      - RAG_MCP_BIND_ADDR=0.0.0.0:8081
+    depends_on:
+      - qdrant
+    env_file:
+      - .env
+    command: ["/app/rag-mcp"]
+
+  api:
+    container_name: LibreChat
+    ports:
+      - "${PORT:-3080}:${PORT:-3080}"
+    depends_on:
+      - mongodb
+      - meilisearch
+      - legacy_proxy
+      - rag_api
+      - rag_mcp
+    image: registry.librechat.ai/danny-avila/librechat-dev:latest
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - JWT_SECRET=your-super-secret-key-change-in-production
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - MEILI_HOST=http://meilisearch:7700
+      - RAG_OPENAI_API_KEY=lbk_secret_ejl_5geiLSdSzvVeSahm63OucYbW9UcELdzzMsWJW_M
+      - RAG_OPENAI_BASE_URL=https://api.ai.camer.digital/v1
+      - RAG_PORT=8000
+      - RAG_API_URL=http://legacy_proxy:8000
+    volumes:
+      - type: bind
+        source: ./.env
+        target: /app/.env
+      - type: bind
+        source: ./librechat.yaml
+        target: /app/librechat.yaml
+      - ./images:/app/client/public/images
+      - librechat_uploads:/app/uploads
+      - ./logs:/app/logs
+
+  mongodb:
+    container_name: chat-mongodb
+    image: mongo:8.0.20
+    restart: always
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./data-node:/data/db
+    command: mongod --noauth
+
+  meilisearch:
+    container_name: chat-meilisearch
+    image: getmeili/meilisearch:v1.35.1
+    restart: always
+    environment:
+      - MEILI_NO_ANALYTICS=true
+      - MEILI_ENV=development
+    volumes:
+      - meili_data:/meili_data
+
 volumes:
   qdrant_data:
+  meili_data:
+  librechat_uploads:
