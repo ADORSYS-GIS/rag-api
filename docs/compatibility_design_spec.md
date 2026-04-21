@@ -27,32 +27,36 @@ Used for full document processing into the RAG system.
     ```
 
 ### B. Extraction (`POST /text`)
-Used for text extraction only, without updating the vector database.
+Used for text extraction, but now **also triggers the ingestion pipeline**.
 
 - **Request**: `multipart/form-data`
     - `file_id`: UUID/String (Required)
     - `file`: Binary file data (Required)
-- **Mapping**: Calls `SimpleExtractService::extract`.
+- **Mapping**: Calls both `SimpleIngestService::ingest` and `SimpleExtractService::extract`.
+- **Side Effect**: Splits text into chunks, generates embeddings, and stores them in Qdrant.
 - **Response**: `application/json`
     ```json
     {
       "status": "success",
-      "content": "extracted text content..."
+      "text": "extracted text content...",
+      "file_id": "...",
+      "filename": "...",
+      "known_type": "..."
     }
     ```
 
 ## 3. Service Boundaries
 
-| Feature | `/text` (Extraction) | `/embed` (Ingestion) |
+| Feature | `/text` (Extraction + Ingest) | `/embed` (Ingestion) |
 | :--- | :---: | :---: |
 | Text Extraction | ✅ | ✅ |
-| Embedding Generation | ❌ | ✅ |
-| Vector DB Storage | ❌ | ✅ |
-| Searchable in RAG | ❌ | ✅ |
+| Embedding Generation | ✅ | ✅ |
+| Vector DB Storage | ✅ | ✅ |
+| Searchable in RAG | ✅ | ✅ |
 
 ### Key Constraints:
-- **Non-Side-Effecting**: The `/text` endpoint MUST remain stateless and NOT write to Qdrant.
-- **Preserved Schema**: Vector dimensions (e.g., 768 for Ollama/Nomic) must match the collection configuration.
+- **Full Ingestion**: The `/text` endpoint is no longer stateless; it results in vector writes.
+- **Chunking**: Implements recursive character splitting (default 1000 chars, 200 overlap).
 
 ## 4. Non-Goals for First Interaction
 - **Hybrid Search**: MVP focuses on pure vector retrieval; keyword/semantic hybrid logic is deferred.

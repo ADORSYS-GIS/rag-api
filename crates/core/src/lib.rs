@@ -257,6 +257,16 @@ pub trait AssetLockManager: Send + Sync {
     ) -> Result<(), CoreError>;
 }
 
+#[derive(Clone)]
+pub struct Chunk {
+    pub text: String,
+    pub chunk_index: u32,
+}
+
+pub trait Chunker: Send + Sync {
+    fn chunk_text(&self, text: &str) -> Vec<Chunk>;
+}
+
 #[async_trait]
 pub trait QueryCache: Send + Sync {
     async fn get_query_embedding(&self, key: &str) -> Result<Option<Vec<f32>>, CoreError>;

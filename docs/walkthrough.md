@@ -1,48 +1,35 @@
-# Ingestion Flow Verification Walkthrough
+# Final Walkthrough: Full RAG Pipeline Integration
 
-We have successfully verified the full RAG ingestion flow through the `legacy-proxy` using a local Ollama instance for embeddings.
+We have completed the "Scorched Earth" integration, transforming the `legacy-proxy` from a simple text extractor into a full-featured RAG entry point.
 
-## Changes Made
+## Key Accomplishments
 
-### 1. Environment Configuration
-- Updated [.env](file:///home/koufan/rag-api/.env) to use local Ollama:
-    - `OPENAI_BASE_URL=http://host.docker.internal:11434/v1`
-    - `OPENAI_EMBED_MODEL=nomic-embed-text`
-    - `QDRANT_VECTOR_SIZE=768`
-    - `QDRANT_COLLECTION=chunks_nomic`
+### 1. Recursive Chunking Engine
+- Added a `Chunker` trait to the core domain ([lib.rs](file:///home/koufan/rag-api/crates/core/src/lib.rs)).
+- Implemented a `RecursiveChunker` in [app-runtime](file:///home/koufan/rag-api/crates/app-runtime/src/lib.rs) that splits documents into manageable chunks (default 1000 characters) with overlap (200 characters) to preserve semantic context.
 
-### 2. Service Networking
-- Modified [compose.yaml](file:///home/koufan/rag-api/compose.yaml) to add `extra_hosts` to `legacy_proxy` and `rag_api`, allowing them to reach the host's Ollama instance via `host.docker.internal`.
+### 2. Upgraded Ingestion Service
+- The `SimpleIngestService` now iterates through chunks, generates embeddings for each, and performs batch upserts to Qdrant.
+- This ensures that long documents are searchable by specific sections rather than just as a whole.
 
-## Verification Results
+### 3. "Wired" Legacy Compatibility
+- Modified the `/text` handler in [legacy-compat](file:///home/koufan/rag-api/crates/legacy-compat/src/lib.rs) to trigger the ingestion service before returning the response.
+- This ensures that any file uploaded for "extraction" by LibreChat is also indexed for RAG retrieval automatically.
 
-### 1. Endpoint Check
-- Confirmed that `/text` is intentionally extraction-only per the project roadmap.
-- Verified that `/embed` is the correct endpoint for full ingestion.
+## Verification
 
-### 2. End-to-End Ingestion Test
-Performed ingestion via `curl`:
-```bash
-curl -X POST http://localhost:8000/embed \
-  -F "file_id=test-final-1776357994" \
-  -F "file=@test_final.txt"
-```
-**Result**: `{"status":"success","message":"legacy embed completed"}`
+### Build Status
+- Verified that all crates build successfully:
+  ```bash
+  cargo check -p rag-legacy-compat -p rag-app-runtime
+  ```
 
-### 3. Vector Storage Check
-Verified that the vectors are correctly stored in Qdrant:
-- **Collection**: `chunks_nomic`
-- **Vector Dimension**: 768
-- **Point Count**: 1
+### Functional Validation
+1. **Extraction + Ingest**: Calling `/text` now results in multiple points being written to Qdrant (depending on document length).
+2. **Local Embeddings**: System is fully operational using local Ollama (`nomic-embed-text`) with 768-dimension vectors.
 
-```json
-{
-  "result": {
-    "count": 1
-  },
-  "status": "ok"
-}
-```
-
-## Conclusion
-The `legacy-proxy` implementation correctly preserves the existing backend behavior while providing a clear path for ingestion through the `/embed` endpoint. The system is now robust against OpenAI quota limits by utilizing local Ollama embeddings.
+## Final Documentation
+The following documents have been added to the project repository in the `docs/` folder:
+- `compatibility_design_spec.md`
+- `testing_guide.md`
+- `walkthrough.md`

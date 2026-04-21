@@ -19,6 +19,16 @@
             "date": 1776330797934,
             "name": "/app/logs/meiliSync-2026-04-16.log",
             "hash": "bbdd524b252b75032a627be1a065772e0086467b897df46eb574fb42a3258966"
+        },
+        {
+            "date": 1776669933981,
+            "name": "/app/logs/meiliSync-2026-04-20.log",
+            "hash": "499ac76ee919111f977de2670691305f04a73cf99f41ee615056f3980c85f488"
+        },
+        {
+            "date": 1776764108951,
+            "name": "/app/logs/meiliSync-2026-04-21.log",
+            "hash": "7634c8d61824ff3d45ac98f7a57b3baec1496b17abcb727d54d31578aa62c418"
         }
     ],
     "hashType": "sha256"

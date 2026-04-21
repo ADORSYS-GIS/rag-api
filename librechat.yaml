@@ -10,8 +10,6 @@ endpoints:
       apiKey: ${CONVERSE_API_KEY}
       baseURL: ${CONVERSE_BASE_URL}
       modelDisplayLabel: Converse
-      addParams:
-        rag_api: true
       models:
         fetch: false
         default:

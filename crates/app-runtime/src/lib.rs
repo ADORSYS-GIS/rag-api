@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use hex::encode;
 use rag_core::{
-    AssetId, BatchQueryRequest, BatchQueryResponse, ChunkRecord, ChunkRepository, CoreError,
-    EmbeddingClient, ExtractRequest, ExtractResponse, ExtractService, IngestRequest,
+    AssetId, BatchQueryRequest, BatchQueryResponse, Chunk, ChunkRecord, ChunkRepository, Chunker,
+    CoreError, EmbeddingClient, ExtractRequest, ExtractResponse, ExtractService, IngestRequest,
     IngestResponse, IngestService, QueryCache, QueryRequest, QueryResponse, QueryService,
     RequestContext, Scope, SearchRequest,
 };
@@ -100,10 +100,13 @@ pub fn build_container() -> Result<AppContainer, CoreError> {
         max_k: config.query_top_k_max,
     });
 
+    let chunker = Arc::new(RecursiveChunker::new(1000, 200));
+    
     Ok(AppContainer {
         ingest_service: Arc::new(SimpleIngestService {
             repository: repository.clone(),
             embeddings: embedding_client.clone(),
+            chunker,
             model: config.embedding_model,
         }),
         extract_service: Arc::new(SimpleExtractService),
@@ -141,7 +144,50 @@ fn parse_usize_env(name: &str, default: usize) -> Result<usize, CoreError> {
 struct SimpleIngestService {
     repository: Arc<dyn ChunkRepository>,
     embeddings: Arc<dyn EmbeddingClient>,
+    chunker: Arc<dyn Chunker>,
     model: String,
+}
+
+pub struct RecursiveChunker {
+    chunk_size: usize,
+    chunk_overlap: usize,
+}
+
+impl RecursiveChunker {
+    pub fn new(chunk_size: usize, chunk_overlap: usize) -> Self {
+        Self {
+            chunk_size,
+            chunk_overlap,
+        }
+    }
+}
+
+impl Chunker for RecursiveChunker {
+    fn chunk_text(&self, text: &str) -> Vec<Chunk> {
+        let mut chunks = Vec::new();
+        let chars: Vec<char> = text.chars().collect();
+        let mut start = 0;
+        let mut index = 0;
+
+        while start < chars.len() {
+            let end = (start + self.chunk_size).min(chars.len());
+            let chunk_text: String = chars[start..end].iter().collect();
+            
+            chunks.push(Chunk {
+                text: chunk_text,
+                chunk_index: index,
+            });
+            index += 1;
+            
+            if end == chars.len() {
+                break;
+            }
+            
+            // Advance by (chunk_size - overlap)
+            start += self.chunk_size.saturating_sub(self.chunk_overlap).max(1);
+        }
+        chunks
+    }
 }
 
 #[async_trait]
@@ -157,37 +203,48 @@ impl IngestService for SimpleIngestService {
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| CoreError::Validation("ingest content cannot be empty".to_string()))?;
 
-        let embedding = self
-            .embeddings
-            .embed_texts(&self.model, std::slice::from_ref(text))
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| CoreError::Provider("missing embedding vector".to_string()))?;
+        let chunks = self.chunker.chunk_text(text);
+        let mut records = Vec::with_capacity(chunks.len());
 
-        let chunk = ChunkRecord {
-            tenant_id: request.scope.tenant_id.clone(),
-            namespace: request.scope.namespace.clone(),
-            asset_id: request.asset_id.clone(),
-            actor_id: ctx.actor_id.clone(),
-            source_type: request.source_type,
-            source_uri: request.source_uri.clone(),
-            digest: chunk_digest(&request.scope, &request.asset_id, text, 0),
-            chunk_index: 0,
-            page: None,
-            path: None,
-            language: None,
-            mime_type: request.mime_type.clone(),
-            title: None,
-            text: text.clone(),
-            embedding,
-            tags: vec![],
-            created_at: Utc::now(),
-        };
+        // Stable Batch Ingestion: Process 20 chunks per request sequentially
+        for chunk_batch in chunks.chunks(20) {
+            let texts: Vec<String> = chunk_batch.iter().map(|c| c.text.clone()).collect();
+            let embeddings = self.embeddings.embed_texts(&self.model, &texts).await?;
+
+            if embeddings.len() != chunk_batch.len() {
+                return Err(CoreError::Provider(format!(
+                    "Batch embedding mismatch: expected {}, got {}",
+                    chunk_batch.len(),
+                    embeddings.len()
+                )));
+            }
+
+            for (chunk, embedding) in chunk_batch.iter().zip(embeddings) {
+                records.push(ChunkRecord {
+                    tenant_id: request.scope.tenant_id.clone(),
+                    namespace: request.scope.namespace.clone(),
+                    asset_id: request.asset_id.clone(),
+                    actor_id: ctx.actor_id.clone(),
+                    source_type: request.source_type.clone(),
+                    source_uri: request.source_uri.clone(),
+                    digest: chunk_digest(&request.scope, &request.asset_id, &chunk.text, chunk.chunk_index),
+                    chunk_index: chunk.chunk_index,
+                    page: None,
+                    path: None,
+                    language: None,
+                    mime_type: request.mime_type.clone(),
+                    title: None,
+                    text: chunk.text.clone(),
+                    embedding,
+                    tags: vec![],
+                    created_at: Utc::now(),
+                });
+            }
+        }
 
         let summary = self
             .repository
-            .upsert_chunks(&request.scope, vec![chunk])
+            .upsert_chunks(&request.scope, records)
             .await?;
 
         Ok(IngestResponse {

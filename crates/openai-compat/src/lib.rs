@@ -19,7 +19,7 @@ impl Default for OpenAiCompatConfig {
         Self {
             base_url: "https://api.openai.com".to_string(),
             api_key: std::env::var("OPENAI_API_KEY").ok(),
-            timeout_ms: 30_000,
+            timeout_ms: 120_000,
             max_retries: 2,
         }
     }

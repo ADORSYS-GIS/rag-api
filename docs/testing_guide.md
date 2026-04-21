@@ -50,14 +50,14 @@ curl -s -X POST http://localhost:6333/collections/chunks_nomic/points/count \
 ```
 **Expected Result**: `"count": X` (where X increases with each test).
 
-### C. Extraction-Only Test (No Side Effects)
-Verify that the legacy `/text` endpoint remains extraction-only.
+### C. Extraction Test (Now with Ingestion Side Effect)
+Verify that the legacy `/text` endpoint now also triggers the RAG pipeline.
 ```bash
 curl -X POST http://localhost:8000/text \
-  -F "file_id=test-extract" \
+  -F "file_id=test-extract-ingest" \
   -F "file=@/path/to/your/document.txt"
 ```
-**Expected Result**: Plain text content returned; **no** new points in Qdrant.
+**Expected Result**: Plain text content returned; **new points** created in Qdrant.
 
 ## 4. Monitoring
 Monitor the logs to troubleshoot any provider or networking issues:

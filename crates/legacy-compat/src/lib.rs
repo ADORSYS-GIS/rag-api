@@ -35,6 +35,7 @@ pub fn router(state: LegacyCompatState) -> Router {
         .route("/query", post(query))
         .route("/query_multiple", post(query_multiple))
         .route("/text", post(text))
+        .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state)
 }
 
@@ -95,6 +96,7 @@ async fn query(
     headers: HeaderMap,
     ExtractJson(body): ExtractJson<LegacyQueryBody>,
 ) -> impl IntoResponse {
+    info!("Received legacy /query request: file_id={}, query=\"{}\"", body.file_id, body.query);
     if body.query.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -147,6 +149,7 @@ async fn query_multiple(
     headers: HeaderMap,
     ExtractJson(body): ExtractJson<LegacyQueryMultipleBody>,
 ) -> impl IntoResponse {
+    info!("Received legacy /query_multiple request: file_ids={:?}, query=\"{}\"", body.file_ids, body.query);
     if body.query.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -197,7 +200,14 @@ async fn query_multiple(
     };
 
     match state.query_service.query_batch(ctx, request).await {
-        Ok(response) => Json(into_legacy_matches(response.matches, actor_id)).into_response(),
+        Ok(response) => {
+            info!("Successfully retrieved {} chunks from vector DB", response.matches.len());
+            for (i, m) in response.matches.iter().enumerate() {
+                let preview = m.chunk.text.chars().take(200).collect::<String>();
+                info!("Chunk #{} [Score: {:.4}]: \"{}...\"", i + 1, m.score, preview.replace('\n', " "));
+            }
+            Json(into_legacy_matches(response.matches, actor_id)).into_response()
+        },
         Err(err) => core_error_to_response(err),
     }
 }
@@ -316,15 +326,30 @@ async fn text(
     info!("Processing extract request: scope={:?}, actor={:?}", scope, actor);
 
     let request = ExtractRequest {
-        scope,
+        scope: scope.clone(),
         source_type: SourceType::Text,
         source_uri: None,
         content: payload.content.clone(),
     };
 
+    let ingest_request = IngestRequest {
+        scope: scope.clone(),
+        asset_id: AssetId(payload.file_id.clone().unwrap()),
+        source_type: SourceType::Upload,
+        source_uri: payload.filename.clone(),
+        content: payload.content.clone(),
+        mime_type: payload.known_type.clone(),
+    };
+
+    let ingest_result = state.ingest_service.ingest(ctx.clone(), ingest_request).await;
+    if let Err(err) = ingest_result {
+        error!("Ingestion failed during /text request: error={}", err);
+        return core_error_to_response(err);
+    }
+
     match state.extract_service.extract(ctx, request).await {
         Ok(response) => {
-            info!("Successfully extracted text: file_id={:?}, text_len={}", 
+            info!("Successfully extracted text and triggered ingestion: file_id={:?}, text_len={}", 
                   payload.file_id, response.text.len());
             Json(serde_json::json!({
                 "text": response.text,
