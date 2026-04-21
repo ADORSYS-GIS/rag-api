@@ -1,1 +1,0 @@
-Final verification of the ingestion flow using local Ollama.
