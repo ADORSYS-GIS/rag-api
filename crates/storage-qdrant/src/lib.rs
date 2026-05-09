@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use qdrant_client::qdrant::{
-    Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder,
-    Distance, FieldType, PointStruct, ScoredPoint, ScrollPointsBuilder, SearchPointsBuilder,
-    VectorParamsBuilder, vectors_config,
+    vectors_config, Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder,
+    DeletePointsBuilder, Distance, FieldType, PointStruct, ScoredPoint, ScrollPointsBuilder,
+    SearchPointsBuilder, VectorParamsBuilder,
 };
 use qdrant_client::{Payload, Qdrant};
 use rag_core::{
@@ -15,7 +15,7 @@ use rag_core::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
-use tracing::{info, error, debug};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]

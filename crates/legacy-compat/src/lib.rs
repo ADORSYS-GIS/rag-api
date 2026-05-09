@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use axum::{
-    Json, Router,
     extract::{Json as ExtractJson, Multipart, State},
     http::HeaderMap,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
+    Json, Router,
 };
 use rag_core::{
     ActorId, AssetId, BatchQueryRequest, CoreError, ExtractRequest, ExtractService, IngestRequest,
@@ -14,7 +14,7 @@ use rag_core::{
     TenantId,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn, error, debug};
+use tracing::{debug, error, info, warn};
 
 #[derive(Clone)]
 pub struct LegacyCompatState {
@@ -96,7 +96,10 @@ async fn query(
     headers: HeaderMap,
     ExtractJson(body): ExtractJson<LegacyQueryBody>,
 ) -> impl IntoResponse {
-    info!("Received legacy /query request: file_id={}, query=\"{}\"", body.file_id, body.query);
+    info!(
+        "Received legacy /query request: file_id={}, query=\"{}\"",
+        body.file_id, body.query
+    );
     if body.query.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -149,7 +152,10 @@ async fn query_multiple(
     headers: HeaderMap,
     ExtractJson(body): ExtractJson<LegacyQueryMultipleBody>,
 ) -> impl IntoResponse {
-    info!("Received legacy /query_multiple request: file_ids={:?}, query=\"{}\"", body.file_ids, body.query);
+    info!(
+        "Received legacy /query_multiple request: file_ids={:?}, query=\"{}\"",
+        body.file_ids, body.query
+    );
     if body.query.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -201,13 +207,21 @@ async fn query_multiple(
 
     match state.query_service.query_batch(ctx, request).await {
         Ok(response) => {
-            info!("Successfully retrieved {} chunks from vector DB", response.matches.len());
+            info!(
+                "Successfully retrieved {} chunks from vector DB",
+                response.matches.len()
+            );
             for (i, m) in response.matches.iter().enumerate() {
                 let preview = m.chunk.text.chars().take(200).collect::<String>();
-                info!("Chunk #{} [Score: {:.4}]: \"{}...\"", i + 1, m.score, preview.replace('\n', " "));
+                info!(
+                    "Chunk #{} [Score: {:.4}]: \"{}...\"",
+                    i + 1,
+                    m.score,
+                    preview.replace('\n', " ")
+                );
             }
             Json(into_legacy_matches(response.matches, actor_id)).into_response()
-        },
+        }
         Err(err) => core_error_to_response(err),
     }
 }
@@ -235,8 +249,11 @@ async fn local_embed(
     headers: HeaderMap,
     ExtractJson(body): ExtractJson<LegacyLocalEmbedBody>,
 ) -> impl IntoResponse {
-    info!("Received request to /local/embed endpoint with file_id: {:?}", body.file_id);
-    
+    info!(
+        "Received request to /local/embed endpoint with file_id: {:?}",
+        body.file_id
+    );
+
     if body
         .content
         .as_ref()
@@ -286,20 +303,20 @@ async fn text(
     multipart: Multipart,
 ) -> impl IntoResponse {
     info!("Received request to /text endpoint");
-    
+
     // Log headers for debugging
     for (key, value) in headers.iter() {
         debug!("Header: {} = {:?}", key, value);
     }
-    
+
     let mut multipart = multipart;
     let payload = match parse_legacy_upload(&mut multipart).await {
         Ok(payload) => {
-            info!("Successfully parsed multipart payload: file_id={:?}, filename={:?}, known_type={:?}, content_len={:?}", 
-                  payload.file_id, payload.filename, payload.known_type, 
+            info!("Successfully parsed multipart payload: file_id={:?}, filename={:?}, known_type={:?}, content_len={:?}",
+                  payload.file_id, payload.filename, payload.known_type,
                   payload.content.as_ref().map(|c| c.len()));
             payload
-        },
+        }
         Err(resp) => {
             error!("Failed to parse multipart payload");
             return resp.into_response();
@@ -307,8 +324,11 @@ async fn text(
     };
 
     if payload.file_id.is_none() || payload.content.is_none() {
-        warn!("Missing required fields: file_id={:?}, content_present={}", 
-              payload.file_id, payload.content.is_some());
+        warn!(
+            "Missing required fields: file_id={:?}, content_present={}",
+            payload.file_id,
+            payload.content.is_some()
+        );
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"detail":"file_id and file are required"})),
@@ -323,7 +343,10 @@ async fn text(
         .or_else(|| header_string(&headers, "x-actor-id"));
     let ctx = legacy_ctx(&headers, &scope, actor.clone());
 
-    info!("Processing extract request: scope={:?}, actor={:?}", scope, actor);
+    info!(
+        "Processing extract request: scope={:?}, actor={:?}",
+        scope, actor
+    );
 
     let request = ExtractRequest {
         scope: scope.clone(),
@@ -341,7 +364,10 @@ async fn text(
         mime_type: payload.known_type.clone(),
     };
 
-    let ingest_result = state.ingest_service.ingest(ctx.clone(), ingest_request).await;
+    let ingest_result = state
+        .ingest_service
+        .ingest(ctx.clone(), ingest_request)
+        .await;
     if let Err(err) = ingest_result {
         error!("Ingestion failed during /text request: error={}", err);
         return core_error_to_response(err);
@@ -349,8 +375,11 @@ async fn text(
 
     match state.extract_service.extract(ctx, request).await {
         Ok(response) => {
-            info!("Successfully extracted text and triggered ingestion: file_id={:?}, text_len={}", 
-                  payload.file_id, response.text.len());
+            info!(
+                "Successfully extracted text and triggered ingestion: file_id={:?}, text_len={}",
+                payload.file_id,
+                response.text.len()
+            );
             Json(serde_json::json!({
                 "text": response.text,
                 "file_id": payload.file_id.clone().unwrap(),
@@ -361,7 +390,7 @@ async fn text(
                 "known_type": payload.known_type.unwrap_or_else(|| "unknown".to_string()),
             }))
             .into_response()
-        },
+        }
         Err(err) => {
             error!("Extract service failed: error={}", err);
             core_error_to_response(err)
@@ -379,9 +408,11 @@ async fn legacy_multipart_ingest(
         Ok(payload) => payload,
         Err(resp) => return resp,
     };
-    
-    info!("Processing upload: file_id={:?}, filename={:?}, known_type={:?}", 
-          payload.file_id, payload.filename, payload.known_type);
+
+    info!(
+        "Processing upload: file_id={:?}, filename={:?}, known_type={:?}",
+        payload.file_id, payload.filename, payload.known_type
+    );
 
     let file_id = match payload.file_id.clone() {
         Some(id) => id,
@@ -411,8 +442,10 @@ async fn legacy_multipart_ingest(
 
     match state.ingest_service.ingest(ctx, request).await {
         Ok(response) => {
-            info!("Successfully ingested file: file_id={}, chunks_written={}", 
-                  response.asset_id.0, response.chunks_written);
+            info!(
+                "Successfully ingested file: file_id={}, chunks_written={}",
+                response.asset_id.0, response.chunks_written
+            );
             Json(serde_json::json!({
                 "status": "success",
                 "message": "legacy embed completed",
@@ -421,7 +454,7 @@ async fn legacy_multipart_ingest(
                 "known_type": payload.known_type.clone().unwrap_or_else(|| "unknown".to_string()),
             }))
             .into_response()
-        },
+        }
         Err(err) => {
             error!("Failed to ingest file: file_id={}, error={}", file_id, err);
             core_error_to_response(err)
@@ -600,7 +633,7 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use super::{LegacyCompatState, router};
+    use super::{router, LegacyCompatState};
 
     struct DummyIngest {
         seen_request: Arc<Mutex<Option<IngestRequest>>>,

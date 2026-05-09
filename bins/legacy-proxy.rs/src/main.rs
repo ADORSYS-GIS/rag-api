@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rag_app_runtime::build_container;
-use rag_legacy_compat::{LegacyCompatState, router};
+use rag_legacy_compat::{router, LegacyCompatState};
 
 #[tokio::main]
 async fn main() -> Result<()> {

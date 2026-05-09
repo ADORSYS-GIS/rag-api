@@ -237,7 +237,7 @@ pub trait ChunkRepository: Send + Sync {
 #[async_trait]
 pub trait EmbeddingClient: Send + Sync {
     async fn embed_texts(&self, model: &str, inputs: &[String])
-    -> Result<Vec<Vec<f32>>, CoreError>;
+        -> Result<Vec<Vec<f32>>, CoreError>;
 
     async fn embed_query(&self, model: &str, input: &str) -> Result<Vec<f32>, CoreError>;
 }

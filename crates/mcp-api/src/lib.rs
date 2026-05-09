@@ -6,25 +6,25 @@
 
 use std::sync::Arc;
 
-use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{http::StatusCode, response::IntoResponse, routing::get, Router};
+use rag_core::{
+    ActorId, AssetFilter, AssetId, BatchQueryRequest, ChunkRepository, CoreError, ExtractRequest,
+    ExtractService, IngestRequest, IngestService, Namespace, QueryRequest, QueryService,
+    RequestContext as RagCtx, Scope, SourceType, TenantId,
+};
 use rmcp::{
-    ErrorData, Json, RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ServerCapabilities, ServerInfo},
     schemars,
     service::RequestContext,
     tool, tool_handler, tool_router,
     transport::{
-        StreamableHttpServerConfig,
         streamable_http_server::{
             session::local::LocalSessionManager, tower::StreamableHttpService,
         },
+        StreamableHttpServerConfig,
     },
-};
-use rag_core::{
-    ActorId, AssetFilter, AssetId, BatchQueryRequest, ChunkRepository, CoreError, ExtractRequest,
-    ExtractService, IngestRequest, IngestService, Namespace, QueryRequest, QueryService,
-    RequestContext as RagCtx, Scope, SourceType, TenantId,
+    ErrorData, Json, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -214,11 +214,10 @@ impl RagMcpHandler {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for RagMcpHandler {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(
-                "RAG MCP server — ingest, extract, query, delete, and list assets \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            "RAG MCP server — ingest, extract, query, delete, and list assets \
                  backed by a Qdrant vector database.",
-            )
+        )
     }
 }
 
@@ -242,7 +241,11 @@ impl RagMcpHandler {
     ) -> std::result::Result<Json<RagResponse>, ErrorData> {
         let source_type = parse_source_type(&params.source_type)?;
         let scope = make_scope(&params.tenant_id, &params.namespace);
-        let ctx = make_rag_ctx(&params.tenant_id, &params.namespace, params.actor_id.as_deref());
+        let ctx = make_rag_ctx(
+            &params.tenant_id,
+            &params.namespace,
+            params.actor_id.as_deref(),
+        );
 
         let request = IngestRequest {
             scope,
@@ -318,7 +321,11 @@ impl RagMcpHandler {
         }
 
         let scope = make_scope(&params.tenant_id, &params.namespace);
-        let ctx = make_rag_ctx(&params.tenant_id, &params.namespace, params.actor_id.as_deref());
+        let ctx = make_rag_ctx(
+            &params.tenant_id,
+            &params.namespace,
+            params.actor_id.as_deref(),
+        );
 
         let request = QueryRequest {
             scope,
@@ -358,7 +365,11 @@ impl RagMcpHandler {
         }
 
         let scope = make_scope(&params.tenant_id, &params.namespace);
-        let ctx = make_rag_ctx(&params.tenant_id, &params.namespace, params.actor_id.as_deref());
+        let ctx = make_rag_ctx(
+            &params.tenant_id,
+            &params.namespace,
+            params.actor_id.as_deref(),
+        );
 
         let request = BatchQueryRequest {
             scope,

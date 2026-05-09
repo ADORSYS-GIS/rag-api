@@ -3,8 +3,8 @@ use rag_core::{CoreError, DocumentUnderstandingClient, EmbeddingClient};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json;
-use tokio::time::{Duration, sleep};
-use tracing::{info, warn, error, debug};
+use tokio::time::{sleep, Duration};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatConfig {
@@ -84,7 +84,10 @@ impl OpenAiCompatClient {
                 req = req.bearer_auth(api_key);
             }
 
-            debug!("OpenAI embedding request attempt {}/{}", attempt, max_attempts);
+            debug!(
+                "OpenAI embedding request attempt {}/{}",
+                attempt, max_attempts
+            );
 
             let response = match req.send().await {
                 Ok(resp) => resp,
@@ -118,7 +121,7 @@ impl OpenAiCompatClient {
                 .await
                 .unwrap_or_else(|_| "<unreadable body>".to_string());
             let message = parse_error_message(status, &body_text);
-            
+
             if should_retry_status(status) && attempt < max_attempts {
                 warn!(
                     "OpenAI embedding request returned retryable status {}/{}: status={}, message={}",
@@ -128,7 +131,10 @@ impl OpenAiCompatClient {
                 continue;
             }
 
-            error!("OpenAI embedding request failed permanently: status={}, message={}", status, message);
+            error!(
+                "OpenAI embedding request failed permanently: status={}, message={}",
+                status, message
+            );
             return Err(CoreError::Provider(message));
         }
     }
@@ -246,7 +252,7 @@ impl EmbeddingClient for OpenAiCompatClient {
             }
             vectors.push(row.embedding.clone());
         }
-        
+
         info!(
             "OpenAI embed_texts: successfully generated {} vectors, each with {} dimensions",
             vectors.len(),
@@ -264,12 +270,10 @@ impl EmbeddingClient for OpenAiCompatClient {
         );
 
         let mut vectors = self.embed_texts(model, &[input.to_string()]).await?;
-        vectors
-            .pop()
-            .ok_or_else(|| {
-                error!("OpenAI embed_query: missing embedding vector");
-                CoreError::Provider("missing embedding vector".to_string())
-            })
+        vectors.pop().ok_or_else(|| {
+            error!("OpenAI embed_query: missing embedding vector");
+            CoreError::Provider("missing embedding vector".to_string())
+        })
     }
 }
 

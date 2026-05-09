@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rag_app_runtime::build_container;
-use rag_http_api::{HttpApiState, router};
+use rag_http_api::{router, HttpApiState};
 
 #[tokio::main]
 async fn main() -> Result<()> {

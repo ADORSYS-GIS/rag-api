@@ -377,17 +377,17 @@ impl Chunker for RecursiveChunker {
         while start < chars.len() {
             let end = (start + self.chunk_size).min(chars.len());
             let chunk_text: String = chars[start..end].iter().collect();
-            
+
             chunks.push(Chunk {
                 text: chunk_text,
                 chunk_index: index,
             });
             index += 1;
-            
+
             if end == chars.len() {
                 break;
             }
-            
+
             // Advance by (chunk_size - overlap)
             start += self.chunk_size.saturating_sub(self.chunk_overlap).max(1);
         }
