@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use rag_core::{CoreError, DocumentUnderstandingClient, EmbeddingClient};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
-use serde_json;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, error, info, warn};
 

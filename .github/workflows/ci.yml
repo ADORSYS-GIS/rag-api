@@ -35,7 +35,9 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -66,7 +68,9 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: cargo test
         run: cargo test --workspace
