@@ -82,7 +82,7 @@ jobs:
     name: Build & Push — ${{ matrix.image }}
     runs-on: ${{ matrix.runner }}
     needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/feat/rag-images-and-mcp-perf' && github.event_name == 'push'
     permissions:
       contents: read
       packages: write
