@@ -29,6 +29,7 @@ FROM debian:bookworm-slim AS runtime-base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r raguser \
     && useradd -r -g raguser -s /sbin/nologin raguser
