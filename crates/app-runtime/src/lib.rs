@@ -6,10 +6,10 @@ use futures::stream::{self, StreamExt};
 use hex::encode;
 use rag_core::{
     AssetId, BatchQueryRequest, BatchQueryResponse, Chunk, ChunkRecord, ChunkRepository, Chunker,
-    CoreError, EmbeddingClient, ExtractRequest, ExtractResponse, ExtractService, IngestRequest,
-    IngestResponse, IngestService, QueryCache, QueryRequest, QueryResponse, QueryService,
-    RequestContext, Scope, SearchRequest,
+    CoreError, EmbeddingClient, ExtractService, IngestRequest, IngestResponse, IngestService,
+    QueryCache, QueryRequest, QueryResponse, QueryService, RequestContext, Scope, SearchRequest,
 };
+use rag_extract::SourceExtractService;
 use rag_openai_compat::{OpenAiCompatClient, OpenAiCompatConfig};
 use rag_storage_qdrant::{QdrantChunkRepository, QdrantRepositoryConfig};
 use sha2::{Digest, Sha256};
@@ -161,7 +161,7 @@ pub fn build_container() -> Result<AppContainer, CoreError> {
             upsert_concurrency: config.upsert_concurrency,
             upsert_batch_size: config.upsert_batch_size,
         }),
-        extract_service: Arc::new(SimpleExtractService),
+        extract_service: Arc::new(SourceExtractService::new()?),
         query_service,
         repository,
     })
@@ -395,8 +395,6 @@ impl Chunker for RecursiveChunker {
     }
 }
 
-struct SimpleExtractService;
-
 fn chunk_digest(scope: &Scope, asset_id: &AssetId, text: &str, chunk_index: u32) -> String {
     let mut hasher = Sha256::new();
     hasher.update(scope.tenant_id.0.as_bytes());
@@ -405,22 +403,6 @@ fn chunk_digest(scope: &Scope, asset_id: &AssetId, text: &str, chunk_index: u32)
     hasher.update(chunk_index.to_le_bytes());
     hasher.update(text.as_bytes());
     encode(hasher.finalize())
-}
-
-#[async_trait]
-impl ExtractService for SimpleExtractService {
-    async fn extract(
-        &self,
-        _ctx: RequestContext,
-        request: ExtractRequest,
-    ) -> Result<ExtractResponse, CoreError> {
-        let text = request
-            .content
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| CoreError::Validation("extract content cannot be empty".to_string()))?;
-
-        Ok(ExtractResponse { text })
-    }
 }
 
 struct RuntimeQueryService {

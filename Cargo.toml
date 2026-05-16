@@ -9,6 +9,7 @@ members = [
   "crates/mcp-api",
   "crates/legacy-compat",
   "crates/app-runtime",
+  "crates/extract",
   "bins/rag-api.rs",
   "bins/rag-mcp.rs",
   "bins/legacy-proxy.rs",
@@ -37,3 +38,6 @@ sha2 = "0.10"
 hex = "0.4"
 futures = "0.3"
 rmcp = { version = "1.6.0", features = ["transport-streamable-http-server"] }
+scraper = "0.22"
+pdf-extract = "0.7"
+mime_guess = "2"

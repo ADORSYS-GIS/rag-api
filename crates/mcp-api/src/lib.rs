@@ -50,13 +50,16 @@ fn any_value_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 pub struct IngestAssetParams {
     /// Unique identifier for this asset (equivalent to `file_id` in legacy API).
     pub asset_id: String,
-    /// Raw text content to chunk, embed, and index.
-    pub content: String,
+    /// Raw text content to chunk, embed, and index. Mutually exclusive with
+    /// `source_uri`; if both are provided, `content` takes precedence.
+    #[serde(default)]
+    pub content: Option<String>,
     /// Source type: `text`, `upload`, `local_file`, `website`, `pdf`, `image`,
     /// `code`, or `ide_buffer`. Defaults to `text`.
     #[serde(default = "default_source_type")]
     pub source_type: String,
-    /// Optional URI or path that identifies the original source.
+    /// Local file path or HTTP/S URL to read and extract text from. Required
+    /// when `content` is not provided. Supports plain text, HTML, and PDF.
     #[serde(default)]
     pub source_uri: Option<String>,
     /// Optional MIME type hint (e.g. `text/plain`, `application/pdf`).
@@ -86,12 +89,15 @@ fn default_namespace() -> String {
 /// Extract text from content without storing vectors.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ExtractAssetTextParams {
-    /// Raw content to extract text from.
-    pub content: String,
+    /// Raw text content to extract from. Mutually exclusive with `source_uri`;
+    /// if both are provided, `content` takes precedence.
+    #[serde(default)]
+    pub content: Option<String>,
     /// Source type hint. Defaults to `text`.
     #[serde(default = "default_source_type")]
     pub source_type: String,
-    /// Optional URI or path of the original source.
+    /// Local file path or HTTP/S URL to read and extract text from. Required
+    /// when `content` is not provided.
     #[serde(default)]
     pub source_uri: Option<String>,
     /// Tenant scope. Defaults to `public`.
@@ -240,19 +246,42 @@ impl RagMcpHandler {
         Parameters(params): Parameters<IngestAssetParams>,
     ) -> std::result::Result<Json<RagResponse>, ErrorData> {
         let source_type = parse_source_type(&params.source_type)?;
+        let source_uri = params.source_uri;
+
+        // Resolve text: use pre-extracted content, or pull it from source_uri.
+        let content = match params.content {
+            Some(c) => c,
+            None => {
+                let uri = source_uri.as_deref().ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        "either content or source_uri must be provided",
+                        None,
+                    )
+                })?;
+                let ectx = make_rag_ctx(&params.tenant_id, &params.namespace, params.actor_id.as_deref());
+                let extract_req = ExtractRequest {
+                    scope: make_scope(&params.tenant_id, &params.namespace),
+                    source_type: source_type.clone(),
+                    source_uri: Some(uri.to_string()),
+                    content: None,
+                };
+                self.extract
+                    .extract(ectx, extract_req)
+                    .await
+                    .map_err(core_to_mcp_error)?
+                    .text
+            }
+        };
+
         let scope = make_scope(&params.tenant_id, &params.namespace);
-        let ctx = make_rag_ctx(
-            &params.tenant_id,
-            &params.namespace,
-            params.actor_id.as_deref(),
-        );
+        let ctx = make_rag_ctx(&params.tenant_id, &params.namespace, params.actor_id.as_deref());
 
         let request = IngestRequest {
             scope,
             asset_id: AssetId(params.asset_id),
             source_type,
-            source_uri: params.source_uri,
-            content: Some(params.content),
+            source_uri,
+            content: Some(content),
             mime_type: params.mime_type,
         };
 
@@ -286,11 +315,18 @@ impl RagMcpHandler {
         let scope = make_scope(&params.tenant_id, &params.namespace);
         let ctx = make_rag_ctx(&params.tenant_id, &params.namespace, None);
 
+        if params.content.is_none() && params.source_uri.is_none() {
+            return Err(ErrorData::invalid_params(
+                "either content or source_uri must be provided",
+                None,
+            ));
+        }
+
         let request = ExtractRequest {
             scope,
             source_type,
             source_uri: params.source_uri,
-            content: Some(params.content),
+            content: params.content,
         };
 
         let response = self
