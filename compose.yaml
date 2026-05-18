@@ -56,6 +56,26 @@ services:
       - .env
     command: ["/app/rag-mcp"]
 
+  mcp_gateway:
+    build:
+      context: .
+      target: mcp-gateway-runtime
+    ports:
+      - "${GATEWAY_PORT:-8090}:8090"
+    environment:
+      - QDRANT_URL=http://qdrant:6334
+      - GATEWAY_BIND_ADDR=0.0.0.0:8090
+      - GATEWAY_TRANSPORT=http
+      # Remaps client-side paths: /home/user/file.pdf → /host/home/user/file.pdf
+      - GATEWAY_HOST_ROOT=/host
+    volumes:
+      # Mount the entire host filesystem read-only so the gateway can read any path.
+      - /:/host:ro
+    depends_on:
+      - qdrant
+    env_file:
+      - .env
+
   api:
     container_name: LibreChat
     ports:

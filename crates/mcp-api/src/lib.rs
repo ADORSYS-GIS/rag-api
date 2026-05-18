@@ -253,12 +253,13 @@ impl RagMcpHandler {
             Some(c) => c,
             None => {
                 let uri = source_uri.as_deref().ok_or_else(|| {
-                    ErrorData::invalid_params(
-                        "either content or source_uri must be provided",
-                        None,
-                    )
+                    ErrorData::invalid_params("either content or source_uri must be provided", None)
                 })?;
-                let ectx = make_rag_ctx(&params.tenant_id, &params.namespace, params.actor_id.as_deref());
+                let ectx = make_rag_ctx(
+                    &params.tenant_id,
+                    &params.namespace,
+                    params.actor_id.as_deref(),
+                );
                 let extract_req = ExtractRequest {
                     scope: make_scope(&params.tenant_id, &params.namespace),
                     source_type: source_type.clone(),
@@ -274,7 +275,11 @@ impl RagMcpHandler {
         };
 
         let scope = make_scope(&params.tenant_id, &params.namespace);
-        let ctx = make_rag_ctx(&params.tenant_id, &params.namespace, params.actor_id.as_deref());
+        let ctx = make_rag_ctx(
+            &params.tenant_id,
+            &params.namespace,
+            params.actor_id.as_deref(),
+        );
 
         let request = IngestRequest {
             scope,

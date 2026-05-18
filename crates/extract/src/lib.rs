@@ -33,17 +33,13 @@ impl ExtractService for SourceExtractService {
         // Passthrough — caller already has text
         if let Some(content) = request.content {
             if content.trim().is_empty() {
-                return Err(CoreError::Validation(
-                    "content cannot be empty".to_string(),
-                ));
+                return Err(CoreError::Validation("content cannot be empty".to_string()));
             }
             return Ok(ExtractResponse { text: content });
         }
 
         let uri = request.source_uri.as_deref().ok_or_else(|| {
-            CoreError::Validation(
-                "either content or source_uri must be provided".to_string(),
-            )
+            CoreError::Validation("either content or source_uri must be provided".to_string())
         })?;
 
         tracing::debug!(uri, "extracting from source");
@@ -62,9 +58,7 @@ impl ExtractService for SourceExtractService {
         let text = to_text(raw, mime).await?;
 
         if text.trim().is_empty() {
-            return Err(CoreError::Validation(
-                "extracted text is empty".to_string(),
-            ));
+            return Err(CoreError::Validation("extracted text is empty".to_string()));
         }
 
         Ok(ExtractResponse { text })

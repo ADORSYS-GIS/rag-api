@@ -1,0 +1,12 @@
+[package]
+name = "rag-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+rag-core = { path = "../core" }
+
+[dev-dependencies]
+tokio.workspace = true

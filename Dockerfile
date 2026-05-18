@@ -21,7 +21,8 @@ COPY bins/ bins/
 RUN cargo build --release \
     --bin rag-api-rs \
     --bin rag-mcp-rs \
-    --bin legacy-proxy-rs
+    --bin legacy-proxy-rs \
+    --bin mcp-gateway-rs
 
 # ─── base runtime ─────────────────────────────────────────────────────────────
 # Shared non-root base used by all three runtime images.
@@ -101,3 +102,28 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD curl -sf http://localhost:8081/healthz || exit 1
 
 ENTRYPOINT ["/usr/local/bin/rag-mcp"]
+
+# ─── mcp-gateway runtime ──────────────────────────────────────────────────────
+FROM runtime-base AS mcp-gateway-runtime
+
+LABEL org.opencontainers.image.title="mcp-gateway"
+LABEL org.opencontainers.image.description="MCP gateway with host-path remapping — stdio or HTTP transport"
+LABEL org.opencontainers.image.source="https://github.com/ADORSYS-GIS/ai-helm"
+
+COPY --from=builder /app/target/release/mcp-gateway-rs /usr/local/bin/mcp-gateway
+
+RUN chown raguser:raguser /usr/local/bin/mcp-gateway
+
+USER raguser
+
+EXPOSE 8090
+
+ENV GATEWAY_BIND_ADDR=0.0.0.0:8090 \
+    GATEWAY_TRANSPORT=http \
+    GATEWAY_HOST_ROOT="" \
+    RUST_LOG=info
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD curl -sf http://localhost:8090/healthz || exit 1
+
+ENTRYPOINT ["/usr/local/bin/mcp-gateway"]
