@@ -28,9 +28,11 @@ RUN cargo build --release \
 # Shared non-root base used by all three runtime images.
 FROM debian:bookworm-slim AS runtime-base
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r raguser \
     && useradd -r -g raguser -s /sbin/nologin raguser
