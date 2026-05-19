@@ -128,9 +128,13 @@ Add this entry to your agent's MCP configuration file:
 ```json
 {
   "mcpServers": {
-    "rag": {
-      "url": "http://localhost:8081/mcp"
-    }
+		"rag": {
+			"url": "http://localhost:8090/mcp",
+			"type": "streamable-http",
+			"alwaysAllow": [
+				"query_asset"
+			]
+		}
   }
 }
 ```

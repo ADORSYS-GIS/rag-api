@@ -97,8 +97,6 @@ services:
       - JWT_SECRET=your-super-secret-key-change-in-production
       - MONGO_URI=mongodb://mongodb:27017/LibreChat
       - MEILI_HOST=http://meilisearch:7700
-      - RAG_OPENAI_API_KEY=lbk_secret_ejl_5geiLSdSzvVeSahm63OucYbW9UcELdzzMsWJW_M
-      - RAG_OPENAI_BASE_URL=https://api.ai.camer.digital/v1
       - RAG_PORT=8000
       - RAG_API_URL=http://legacy_proxy:8000
     volumes:
