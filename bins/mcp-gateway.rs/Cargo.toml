@@ -1,0 +1,20 @@
+[package]
+name = "mcp-gateway-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mcp-gateway-rs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rmcp = { workspace = true, features = ["transport-streamable-http-server", "transport-io"] }
+rag-app-runtime = { path = "../../crates/app-runtime" }
+rag-mcp-api     = { path = "../../crates/mcp-api" }
+rag-gateway     = { path = "../../crates/gateway" }

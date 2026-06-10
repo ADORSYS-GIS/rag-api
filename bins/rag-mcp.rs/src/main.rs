@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rag_app_runtime::build_container;
-use rag_mcp_api::{McpApiState, router};
+use rag_mcp_api::build_router;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -12,17 +12,18 @@ async fn main() -> Result<()> {
         .init();
 
     let container = build_container()?;
-    let state = McpApiState {
-        ingest_service: container.ingest_service,
-        extract_service: container.extract_service,
-        query_service: container.query_service,
-    };
 
-    let app = router(state);
+    let app = build_router(
+        container.ingest_service,
+        container.extract_service,
+        container.query_service,
+        container.repository,
+    );
+
     let bind_addr =
         std::env::var("RAG_MCP_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-    tracing::info!(%bind_addr, "starting rag-mcp.rs");
+    tracing::info!(%bind_addr, "starting rag-mcp");
     axum::serve(listener, app).await?;
 
     Ok(())

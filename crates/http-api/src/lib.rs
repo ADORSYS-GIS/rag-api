@@ -6,11 +6,11 @@
 use std::sync::Arc;
 
 use axum::{
-    Json, Router,
     extract::{Json as ExtractJson, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
 use rag_core::{
     ActorId, AssetId, BatchQueryRequest, CoreError, ExtractRequest, ExtractService, IngestRequest,
@@ -384,7 +384,7 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use super::{HttpApiState, router};
+    use super::{router, HttpApiState};
 
     struct DummyIngest {
         seen_request: Arc<Mutex<Option<IngestRequest>>>,

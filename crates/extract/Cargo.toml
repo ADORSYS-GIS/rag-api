@@ -1,0 +1,15 @@
+[package]
+name = "rag-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+rag-core = { path = "../core" }
+reqwest.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+scraper = { workspace = true }
+pdf-extract = { workspace = true }
+mime_guess = { workspace = true }

@@ -1,0 +1,71 @@
+# Minimal stack for testing the RAG MCP server.
+#
+# Starts:
+#   qdrant   — vector database (ports 6333 HTTP UI, 6334 gRPC)
+#   rag-mcp  — MCP server (port 8081, endpoint /mcp)
+#
+# Usage:
+#   docker compose -f compose.mcp-test.yml up
+#
+# Then point any MCP client at:
+#   http://localhost:8081/mcp
+#
+# Or hit the health probe:
+#   curl http://localhost:8081/healthz
+#
+# Required env vars (copy .env.example → .env and fill in):
+#   OPENAI_BASE_URL   — embedding provider base URL
+#   OPENAI_API_KEY    — API key (use a placeholder like "ollama" for local models)
+#   OPENAI_EMBED_MODEL — e.g. text-embedding-3-small or nomic-embed-text
+#   QDRANT_COLLECTION  — collection name, e.g. chunks_te3_small
+#   QDRANT_VECTOR_SIZE — must match your embedding model's output dimensions
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    ports:
+      - "6333:6333"   # REST / dashboard  →  http://localhost:6333/dashboard
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  rag-mcp:
+    image: rag-api-rag_mcp:latest
+    ports:
+      - "8081:8081"
+    environment:
+      RAG_MCP_BIND_ADDR: "0.0.0.0:8081"
+      QDRANT_URL: "http://qdrant:6334"
+      # Override any of these via a .env file or inline here:
+      QDRANT_COLLECTION: "${QDRANT_COLLECTION:-chunks_te3_small}"
+      QDRANT_VECTOR_SIZE: "${QDRANT_VECTOR_SIZE:-1536}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://api.openai.com}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_EMBED_MODEL: "${OPENAI_EMBED_MODEL:-text-embedding-3-small}"
+      OPENAI_TIMEOUT_MS: "${OPENAI_TIMEOUT_MS:-30000}"
+      OPENAI_MAX_RETRIES: "${OPENAI_MAX_RETRIES:-2}"
+      # Parallel ingest tuning (optional)
+      INGEST_EMBED_BATCH_SIZE: "${INGEST_EMBED_BATCH_SIZE:-50}"
+      INGEST_EMBED_CONCURRENCY: "${INGEST_EMBED_CONCURRENCY:-4}"
+      INGEST_UPSERT_BATCH_SIZE: "${INGEST_UPSERT_BATCH_SIZE:-100}"
+      INGEST_UPSERT_CONCURRENCY: "${INGEST_UPSERT_CONCURRENCY:-4}"
+      RUST_LOG: "${RUST_LOG:-info}"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8081'"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  qdrant_data:
+    driver: local

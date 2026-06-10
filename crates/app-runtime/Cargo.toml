@@ -7,12 +7,14 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 rag-core = { path = "../core" }
+rag-extract = { path = "../extract" }
 rag-openai-compat = { path = "../openai-compat" }
 rag-storage-qdrant = { path = "../storage-qdrant" }
 tracing.workspace = true
 sha2.workspace = true
 hex.workspace = true
 chrono.workspace = true
+futures.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

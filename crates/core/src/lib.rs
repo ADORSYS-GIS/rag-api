@@ -237,7 +237,7 @@ pub trait ChunkRepository: Send + Sync {
 #[async_trait]
 pub trait EmbeddingClient: Send + Sync {
     async fn embed_texts(&self, model: &str, inputs: &[String])
-    -> Result<Vec<Vec<f32>>, CoreError>;
+        -> Result<Vec<Vec<f32>>, CoreError>;
 
     async fn embed_query(&self, model: &str, input: &str) -> Result<Vec<f32>, CoreError>;
 }
@@ -255,6 +255,16 @@ pub trait AssetLockManager: Send + Sync {
         namespace: &Namespace,
         asset_id: &AssetId,
     ) -> Result<(), CoreError>;
+}
+
+#[derive(Clone)]
+pub struct Chunk {
+    pub text: String,
+    pub chunk_index: u32,
+}
+
+pub trait Chunker: Send + Sync {
+    fn chunk_text(&self, text: &str) -> Vec<Chunk>;
 }
 
 #[async_trait]
